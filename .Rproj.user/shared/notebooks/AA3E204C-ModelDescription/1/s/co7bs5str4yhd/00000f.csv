@@ -1,0 +1,4 @@
+"0","costmods <- list(Inpatient  = medcostipmod,"
+"0","                 Outpatient = medcostopmod,"
+"0","                 OtherOutRx = medcostothmod,"
+"0","                 HOSPICE    = medcosthospicemod)"

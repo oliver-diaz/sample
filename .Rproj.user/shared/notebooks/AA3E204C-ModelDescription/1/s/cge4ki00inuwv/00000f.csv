@@ -1,0 +1,1 @@
+"0","load(""../data/cost_tx_seq.rda"") # loads tables with treatments costs by state and strategy"

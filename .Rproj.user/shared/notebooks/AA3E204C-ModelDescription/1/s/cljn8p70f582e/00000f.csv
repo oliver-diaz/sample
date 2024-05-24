@@ -1,0 +1,4 @@
+"0","## Summary of average QALYs per line of treatment ----"
+"0","qaly_chart <- chart.LOT(econmod$qalys_,'QALYs')"
+"0","qaly_chart$plot + ggtitle(""Mean QALYs"") +"
+"0","  theme(plot.title = element_text(hjust = 0.5) ) "

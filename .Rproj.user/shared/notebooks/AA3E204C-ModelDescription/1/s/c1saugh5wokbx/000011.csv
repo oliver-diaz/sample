@@ -1,0 +1,4 @@
+"0","#             kable_styling(""striped"", full_width = F)"
+"0",""
+"0","rm(base_wac, baselineTX_data, temp)"
+"0",""

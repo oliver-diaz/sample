@@ -1,0 +1,26 @@
+{
+    "id": "654D1A0A",
+    "path": "~/MMModel/analysis/Analysis.Rmd",
+    "project_path": "analysis/Analysis.Rmd",
+    "type": "r_markdown",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1716573740036.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "1176,31",
+        "scrollLine": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1706303707,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1706303707,
+    "read_only": false,
+    "read_only_alternatives": []
+}

@@ -1,0 +1,3 @@
+"0","# Population ----"
+"0","n_patients <- 100 # population size"
+"0","n_samples <- 100 # number of simulations (with different set of model input parameter values)"

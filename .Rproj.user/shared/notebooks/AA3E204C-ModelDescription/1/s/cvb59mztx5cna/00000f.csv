@@ -1,0 +1,2 @@
+"0","disc <- 0.03 # Annual discount rate"
+"0","v <- 1/(1+disc) # discount factor"

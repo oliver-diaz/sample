@@ -1,0 +1,6 @@
+"0","# Transition model ----"
+"0","transmod <- create_IndivCtstmTrans(transmod_params, "
+"0","                                   input_data = transmod_data,"
+"0","                                   trans_mat = tmat,"
+"0","                                   clock = ""reset"")"
+"0",""

@@ -1,0 +1,7 @@
+"0","snippet <- head(summary(transmod_coef),10)"
+"0","knitr::kable(snippet,"
+"0","  longtable = T,"
+"0","  booktabs = T, linesep = """","
+"0","  caption = ""Snippet of sampled survival paramerers"""
+"0","  )  %>%"
+"0","  kableExtra::kable_styling(""striped"", latex_options = ""hold_position"")#   kableExtra::kable_styling(""striped"", full_width = F)"

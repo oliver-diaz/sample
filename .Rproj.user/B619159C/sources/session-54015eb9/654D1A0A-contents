@@ -1,0 +1,2250 @@
+---
+title: "Multiple Myeloma Treatment Sequencing Model"
+subtitle: "Cost-Effectiveness Analysis; Model Run with User Inputs"
+#date: "2023-09-01"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+    bookdown::html_document2:
+      toc: yes
+      toc_depth: 2
+      toc_float: true
+
+     # bookdown::pdf_document2
+
+bibliography: references.bib
+biblio-style: apalike
+csl: vancouver-author-date.csl
+
+---
+# Overview
+This health economic simulation model is designed to estimate the course of disease, expected quality-adjusted life years (QALYs), and expected costs of multiple myeloma (MM) from a US healthcare perspective with three alternative sequences of treatment regimens for transplant-eligible patients. Based on these outcomes, a cost-effectiveness analysis is performed. Model inputs for the number of simulation runs, treatment effects expressed as hazard ratios (HR), utilities, drug treatment costs and other medical costs may be entered directly by the user. (Note: Only `R` chunks related to user input are visible in this Rmarkdown file. For a detailed description of the code, we refer the user to the `ModelDescription.Rmd` file. A detailed description of the model will be provided in a technical report.)
+
+----
+
+```{r packgs, echo =FALSE, message=FALSE}
+#  knitr::opts_chunk$set(echo = TRUE) make all chunks visible
+# Load packages needed ----
+library("hesim")
+library("data.table")
+library("survival")
+library("flexsurv")
+library("ggplot2")
+library("survminer")
+library("dplyr")
+library("kableExtra")
+library("knitr")
+
+theme_set(theme_bw()) # graphics theme_bw = classic dark-on-light ggplot2 theme
+rm(list=ls()) # clearing memory space
+set.seed(101) # make random number generation reproducible
+
+source("../R/aux_functions.R") # miscellaneous functions
+source('../R/eval_tx_cost.R') # function that  evaluates treatment costs
+source('../R/TXcostsUpdate.R') # function to update annualized TX costs
+```
+
+# Treatment Sequences
+
+The following treatment sequences are compared within the simulation model:
+
+1.  Sequence 1: (DVRd + ASCT + DR ) \> DKd \> EloPd \> Sd \> Cilta-cel.
+2.  Sequence 2: (DVRd + ASCT + DR ) \> Cilta-cel \> TalDara \> Tec \> SKd.
+3.  Sequence 3: (DVrd + DRd) \> Tec \> EloPd \> Tal \> Kd.
+
+----
+
+# Model Structure
+To estimate the course of disease, expected QALYs, and costs associated with the alternative treatment sequences, an individual-level continuous time state transition model is used (Figure \@ref(fig:figMS)). 
+ 
+```{r figMS, fig.cap= "\\label{fig:figMS}Model Structure",  echo=FALSE,  fig.show='hold',fig.align = "center",out.width="700px", fig.pos="H"}
+state_ids <- 1:6
+transition_names <- c("P1-> R1_P2", "P1 -> Death","R1_P2 -> R2_P3", "R1_P2 -> Death", "R2_P3 -> R3_P4", "R2_P3 -> Death",
+                      "R3_P4 -> R4_P5", "R3_P4 -> Death", "R4_P5 -> R5", "R4_P5 -> Death", "R5 -> Death")
+
+knitr::include_graphics("../doc/model_structure.jpg")
+
+```
+
+## Model States
+ 
+1. P1: On 1L therapy.
+2. R1_P2: relapsed on 1L; moved to 2L therapy.
+3. R2_P3: relapsed on 2L; moved to 3L therapy.
+4. R3_P4: relapsed on 3L; moved to 4L therapy.
+5. R4_P5: relapsed on 4L; moved to 5L therapy.
+6. R5: relapsed on 5L therapy.
+7. Death.
+
+## Transitions
+
+The transitions between the model health states defined above are defined as follows:
+
+1. t1: $P1 \rightarrow R1\_P2$
+2. t2: $P1 \rightarrow Death$
+3. t3: $R1\_P2 \rightarrow R2\_P3$
+4. t4: $R1\_P2 \rightarrow Death$
+5. t5: $R2\_P3 \rightarrow R3\_P4$
+6. t6: $R2\_P3 \rightarrow Death$
+7. t7: $R3\_P4 \rightarrow R4\_P5$
+8. t8: $R3\_P4 \rightarrow Death$
+9. t9: $R4\_P5 \rightarrow R5$
+10. t10: $R3\_P4 \rightarrow Death$
+11. t11: $R5 \rightarrow Death$
+
+
+Time-varying transition rates between the health states (lines of treatment) are based on progression free survival (PFS) curves from the following studies: 
+
+- Line 1, GRIFFIN [@griffin], 
+- Line 2, CANDOR [@candor], 
+- Line 3, ELOQUENT-3 [@eloquent3],
+- Line 4, STORM [@storm], 
+- Line 5, Majes TEC-1 [@majestec].
+
+HR estimates will be applied to obtain time-varying transition rates for the actual treatments of interest by line of treatment for each of the sequences.
+Transition rates to death are based on overall survival (OS) data from [@braunlin_21] and US Life Tables.
+
+----
+
+<!---#################################################################################
+     #               THIS IS THE BEGINING OF THE INPUT SECTION                       #
+     ################################################################################# --->
+
+
+# Model Inputs (User Defined)
+
+The user need to enter values in the code for the number of simulation runs, treatment effects expressed as HRs, utilities, drug treatment costs, and other medical costs.
+
+
+## Simulation Runs: Population Size and Number of Model Parameter Input Samples
+
+The model is an individual-level simulation model by which disease progression over time and expected outcomes for the population of interest are obtained by repeatedly simulating individual patients for a given set of model input parameter values. The number of individuals simulated needs to be sufficiently large to minimize Monte Carlo error (or 1st order uncertainty) and obtain correct model output results for the set of input values. To propagate the uncertainty in model input parameters and reflect this in model output and cost-effectiveness results, the model repeatedly runs for different sets of randomly sampled input parameter values. A sufficiently large number of samples is needed to capture the complete uncertainty distributions of the model input parameters.
+
+The user is able to set both the size of the simulated population for a given model run (with a given set of model input values) as well as the number of sampled sets of model input parameter values. NOTE: Increasing the simulated population size and the number of samples with different sets of input values will increase the time it takes to get model results.
+
+-   For a quick run and demonstration of the model it is sufficient to set `n_patients <- 100` and `n_samples <- 100`.\
+-   For robust results, a `n_patients>=1000` and `n_samples>=1000` is recommended.
+```{r population, echo= TRUE}
+# Simulation Runs ----
+n_patients <- 200 # user: population size per set of parameter values
+n_samples <- 300 # user: number of sampled sets of model input parameter values
+```
+
+
+## Discount Rate, Willingness-to-Pay (CE Threshold), Anchor Sequence
+
+<!-- This chunk sets the discount rate to use to evaluate the economic value of future interventions, willingness to pay, and the anchor sequence (comparator) --> 
+
+```{r ecoanalysis, echo=TRUE}
+discQ <- 0.03       # user: QALY annual discount rate
+discC <- 0.03       # user: Costs annual discount rate
+anchor_seq <- 3    # user: anchor sequence strategy (comparator)
+kwill <- 150000    # user: willingness to pay per QALY
+```
+
+
+## Model Input Parameters
+### Disease Progression
+#### Hazard Ratios
+
+The code below shows how the HRs (for time to progression) are entered based on the estimated range of uncertainty.
+
+```{r HRratesJanssen, echo=TRUE}
+# Sequence strategies 
+## st1 = Sequence 1
+## st2 = Sequence 2
+## st3 = Sequence 3
+## notst3 = Either sequence 1 or 2
+## notst2 = Either sequence 1 or 3
+
+###########################################
+## HRuser_modify = 0 use default HRs and uncertainty ranges;
+## HRuser_modify = 1 enter HRs and uncertainty ranges
+HRuser_modify = 1 
+if(HRuser_modify ==1){
+kol.HR <- list(
+  ## t1: "P1-> R1_P2"
+  t1.hr = data.frame(low = c(notst3 = .21,  # DVRd + ASCT + DR. May be modified by user
+                             st3 = 1        # DVrd + DRd. May be modified by user
+                             ), 
+                     up = c( notst3 = .95,  # DVRd + ASCT + DR. May be modified by user
+                             st3 = 1        # DVrd + DRd. May be modified by user 
+                            )),
+  ## t3: "R1_P2 -> R2_P3"
+  t3.hr = data.frame(low = c(st1 = 1,       # DKd. May be modified by user
+                             st2= .66,      # Cilta-cel. May be modified by user
+                             st3= 1         # Tec. May be modified by user
+                             ),
+                     up = c(st1 = 1,        # DKd. May be modified by user
+                            st2 = 1.09,      # Cilta-cel. May be modified by user
+                            st3 = 1         # Tec. May be modified by user
+                            )),
+  ## t5: "R2_P3 -> R3_P4"
+  t5.hr = data.frame(low = c(notst2 = .96,    # EloPd. May be modified by user
+                             st2= .4       # TalDara. May be modified by user
+                             ),
+                     up = c(notst2 = 1,     # EloPd. May be modified by user
+                            st2 = .79       # TalDara. May be modified by user
+                            )),
+  ## t7: "R3_P4 -> R4_P5"
+  t7.hr = data.frame(low = c(st1 = 1,       # Sd. May be modified by user
+                             st2= .05,      # Tec. May be modified by user
+                             st3= .16       # Tal. May be modified by user
+                             ),
+                     up = c(st1 = 1,        # Sd. May be modified by user
+                            st2 = .11,      # Tec. May be modified by user
+                            st3 = 1         # Tal. May be modified by user
+                          )),
+  ## t9: "R4_P5 -> R5"
+  t9.hr = data.frame(low = c(st1 = .35,     # Cilta-cel. May be modified by user
+                             st2= 1.51,      # SKd. May be modified by user
+                             st3= 1.04       # Kd. May be modified by user
+                             ),
+                     up = c(st1 = .53,      # Cilta-cel. May be modified by user
+                            st2= 2.21,       # SKd. May be modified by user
+                            st3= 1.42        # Kd. May be modified by user
+                            ))
+)
+} else{
+  # HRuser_modify = 0, default baseline HRs and uncertainty ranges are used
+  load('../data/kol.HR.rda') 
+}
+```
+
+
+#### Mortality Adjustments
+
+Choose the method to adjust the time to death pre-progression:
+
+- Based on percentage of mortality up to median PFS: `OS_HR=0`.
+- Based on percentage of mortality up to median OS: `OS_HR=1`.
+- No adjustment: `OS_HR` not in $\{0,1\}$.
+
+Choose source of mortality curves:
+
+- Based on [@braunlin_21]: `OS_Braunlin=1`.
+- Based on US Life Tables: `OS_Braunlin=0`.
+
+```{r mortaity_method, echo=TRUE}
+OS_HR <- 0
+OS_Braunlin <- 1
+```
+
+
+### Utility
+
+<!--- Utilities per sequence (`strateg_id`) and state (`state_id`) are used by the model to estimate QALYs. For each simulation run of the model, utility values are sample from a beta distribution with mean $m$ and standard error $\varepsilon$. The chunk below indicates how the predetermined  utility inputs are loaded into the model to create a object that the `hesim` package used to estimate population QALYs.-->
+
+In the code below, utility input values are entered.
+
+```{r utilities, echo=TRUE}
+# There are 6 non death states in the model:
+## 1. P1: On 1L therapy.
+## 2. R1_P2: relapsed on 1L; moved to 2L therapy.
+## 3. R2_P3: relapsed on 2L; moved to 3L therapy.
+## 4. R3_P4: relapsed on 3L; moved to 4L therapy.
+## 5. R4_P5: relapsed on 4L; moved to 5L therapy.
+## 6. R5: relapsed on 5L therapy.
+
+###########################################
+## user_modify = 0 use default HRs and uncertainty ranges;
+## user_modify = 1 enter HRs and uncertainty ranges
+user_modify = 1 
+if(user_modify ==1){
+  ## Utilities
+  util <- vector('list', length = 3)
+  # sequence 1
+  util[[1]] <- data.table(strategy_id =1,
+                          state_id = state_ids,
+                          mean = c(P1 = 0.659, # user
+                                   R1_P2 = 0.626, # user
+                                   R2_P3 = 0.599, # user
+                                   R3_P4 = 0.599, # user
+                                   R4_P5 = 0.599, # user
+                                   R5 = 0.599 # user
+                                   ),
+                          se = c(P1 = 0.03475, # user
+                                 R1_P2 = 0.02900, # user
+                                 R2_P3 = 0.01425, # user
+                                 R3_P4 = 0.07175, # user
+                                 R4_P5 = 0.07175, # user
+                                 R5 = 0.07175 # user
+                                 )
+                          )
+  # sequence 2
+  util[[2]] <- data.table(strategy_id =2,
+                          state_id = state_ids,
+                          mean = c(P1 = 0.659, # user
+                                   R1_P2 = 0.626, # user
+                                   R2_P3 = 0.599, # user
+                                   R3_P4 = 0.599, # user
+                                   R4_P5 = 0.599, # user
+                                   R5 = 0.599 # user
+                                   ),
+                          se = c(P1 = 0.03475, # user
+                                 R1_P2 = 0.02900, # user
+                                 R2_P3 = 0.01425, # user
+                                 R3_P4 = 0.07175, # user
+                                 R4_P5 = 0.07175, # user
+                                 R5 = 0.07175 # user
+                                 )
+                          )
+  # sequence 3
+  util[[3]] <- data.table(strategy_id =3, 
+                          state_id = state_ids,
+                          mean = c(P1 = 0.659, # user
+                                   R1_P2 = 0.626, # user
+                                   R2_P3 = 0.599, # user
+                                   R3_P4 = 0.599, # user
+                                   R4_P5 = 0.599, # user
+                                   R5 = 0.599 # user
+                                   ),
+                          se = c(P1 = 0.03475, # user
+                                 R1_P2 = 0.02900, # user
+                                 R2_P3 = 0.01425, # user
+                                 R3_P4 = 0.07175, # user
+                                 R4_P5 = 0.07175, # user
+                                 R5 = 0.07175 # user
+                                 )
+                          )
+  utility_data <- do.call(rbind, util)
+  rm(util)
+  } else{
+    # user_modify = 0, baseline utilities are used
+    load('../data/utility_data.rda')
+    }
+```
+
+
+### Other Medical costs
+
+<!-- Other medical costs are split into inpatient costs,outpatient costs, outpatient drug costs (drugs which are not part of the treatment and are applied during outpatient visits) and hospice costs.  Table   \@ref(tab:medcostip)  shows only the predetermined medical inpatient costs used in the study. As with utilities, each simulation of the model samples values from a gamma distribution with some mean $\mu$ and standard error $\sigma$. The chunk below shows how the predetermined medical costs inputs are loaded to generate an object which the `hesim` package uses to estimate population medical costs.-->
+
+In the code below, other medical costs are entered.
+
+#### Inpatient Costs
+
+```{r medcostIP, echo=TRUE}
+# States
+## 1. P1: On 1L therapy.
+## 2. R1_P2: relapsed on 1L; moved to 2L therapy.
+## 3. R2_P3: relapsed on 2L; moved to 3L therapy.
+## 4. R3_P4: relapsed on 3L; moved to 4L therapy.
+## 5. R4_P5: relapsed on 4L; moved to 5L therapy.
+## 6. R5: relapsed on 5L therapy.
+
+###########################################
+## ipa_user_modify = 0 use baseline inpatient costs;
+## ipa_user_modify = 1 enter use baseline inpatient costs
+ipa_user_modify = 1 
+if(ipa_user_modify ==1){
+  ## Inpatient
+  ipa <- vector('list', length = 3)
+  ### sequence 1
+  ipa[[1]] <- data.table(strategy_id = 1,
+                         # Excludes state R5
+                         state_id = state_ids[1:5],
+                         mean = c(P1 = 29089.71, # user
+                                  R1_P2 = 52876.24, # user
+                                  R2_P3 = 97455.06, # user
+                                  R3_P4 = 115083.54, # user
+                                  R4_P5 = 135900.80 # user
+                                  ),
+                         se = c(P1 = 4601.797, # user
+                                R1_P2 = 5990.687, # user
+                                R2_P3 = 10984.061, # user
+                                R3_P4 = 19727.341, # user
+                                R4_P5 = 18003.367 # user
+                                )
+                       )
+  ### sequence 2
+  ipa[[2]] <- data.table(strategy_id = 2,
+                         # Excludes state R5
+                         state_id = state_ids[1:5],
+                         mean = c(P1 = 29089.71, # user
+                                  R1_P2 = 52876.24, # user
+                                  R2_P3 = 97455.06, # user
+                                  R3_P4 = 115083.54, # user
+                                  R4_P5 = 135900.80 # user
+                                  ),
+                         se = c(P1 = 4601.797, # user
+                                R1_P2 = 5990.687, # user
+                                R2_P3 = 10984.061, # user
+                                R3_P4 = 19727.341, # user
+                                R4_P5 = 18003.367 # user
+                                )
+                       )
+  ### sequence 3
+  ipa[[3]] <- data.table(strategy_id = 3,
+                         state_id = state_ids[1:5],
+                         # Excludes state R5
+                         mean = c(P1 = 29089.71, # user
+                                  R1_P2 = 52876.24, # user
+                                  R2_P3 = 97455.06, # user
+                                  R3_P4 = 115083.54, # user
+                                  R4_P5 = 135900.80 # user
+                                  ),
+                         se = c(P1 = 4601.797, # user
+                                R1_P2 = 5990.687, # user
+                                R2_P3 = 10984.061, # user
+                                R3_P4 = 19727.341, # user
+                                R4_P5 = 18003.367 # user
+                                )
+                       )
+  inpatient <- do.call(rbind, ipa)
+  rm(ipa)
+  } else{
+    # ipa_user_modify = 0, baseline inpatient costs are used
+    load('../data/medcost_data.rda')
+    inpatient <- medcost_data$inpatient
+    rm(medcost_data)
+  }
+```
+
+
+#### Outpatient Costs
+
+```{r medcostOP, echo=TRUE}
+# States
+## 1. P1: On 1L therapy.
+## 2. R1_P2: relapsed on 1L; moved to 2L therapy.
+## 3. R2_P3: relapsed on 2L; moved to 3L therapy.
+## 4. R3_P4: relapsed on 3L; moved to 4L therapy.
+## 5. R4_P5: relapsed on 4L; moved to 5L therapy.
+## 6. R5: relapsed on 5L therapy.
+
+###########################################
+## op_user_modify = 0 use baseline outpatient costs;
+## op_user_modify = 1 enter use baseline outpatient costs
+
+op_user_modify = 1 
+if(op_user_modify ==1){
+  ## Outpatient
+  outpat <- vector('list', length = 3)
+  ### sequence 1
+  outpat[[1]] <- data.table(strategy_id = 1,
+                            # Excludes state R5
+                            state_id = state_ids[1:5],
+                            mean = c(P1 = 26368.82, # user
+                                     R1_P2 = 42602.41, # user
+                                     R2_P3 = 64461.73, # user
+                                     R3_P4 = 59304.77, # user
+                                     R4_P5 = 54560.36 # user
+                                     ),
+                            se = c(P1 = 1483.823, # user
+                                   R1_P2 = 3503.257, # user
+                                   R2_P3 = 4051.651, # user
+                                   R3_P4 = 5768.380, # user
+                                   R4_P5 = 4407.599 # user
+                                   )
+                       )
+  ### sequence 2
+  outpat[[2]] <- data.table(strategy_id = 2,
+                            # Excludes state R5
+                            state_id = state_ids[1:5],
+                            mean = c(P1 = 26368.82, # user
+                                     R1_P2 = 42602.41, # user
+                                     R2_P3 = 64461.73, # user
+                                     R3_P4 = 59304.77, # user
+                                     R4_P5 = 54560.36 # user
+                                     ),
+                            se = c(P1 = 1483.823, # user
+                                   R1_P2 = 3503.257, # user
+                                   R2_P3 = 4051.651, # user
+                                   R3_P4 = 5768.380, # user
+                                   R4_P5 = 4407.599 # user
+                                   )
+                       )
+  ### sequence 3
+  outpat[[3]] <- data.table(strategy_id = 3,
+                            # Excludes state R5
+                            state_id = state_ids[1:5],
+                            mean = c(P1 = 26368.82, # user
+                                     R1_P2 = 42602.41, # user
+                                     R2_P3 = 64461.73, # user
+                                     R3_P4 = 59304.77, # user
+                                     R4_P5 = 54560.36 # user
+                                     ),
+                            se = c(P1 = 1483.823, # user
+                                   R1_P2 = 3503.257, # user
+                                   R2_P3 = 4051.651, # user
+                                   R3_P4 = 5768.380, # user
+                                   R4_P5 = 4407.599 # user
+                                   )
+                       )
+  outpatient <- do.call(rbind, outpat)
+  rm(outpat) 
+  } else{
+    # op_user_modify = 0, baseline outpatient costs are used
+    load('../data/medcost_data.rda')
+    outpatient <- medcost_data$outpatient
+    rm(medcost_data)
+  }
+```
+
+
+\newpage
+
+#### Other Outpatient Costs
+
+```{r medcostOthOP, echo=TRUE}
+# States
+## 1. P1: On 1L therapy.
+## 2. R1_P2: relapsed on 1L; moved to 2L therapy.
+## 3. R2_P3: relapsed on 2L; moved to 3L therapy.
+## 4. R3_P4: relapsed on 3L; moved to 4L therapy.
+## 5. R4_P5: relapsed on 4L; moved to 5L therapy.
+## 6. R5: relapsed on 5L therapy.
+
+###########################################
+## user_modify = 0 use baseline outpatient costs;
+## user_modify = 1 enter use baseline outpatient costs
+
+othop_user_modify = 1 
+if(othop_user_modify ==1){
+  ## Other outpatient
+  oth_op <- vector('list', length = 3)
+  ### sequence 1
+  oth_op[[1]] <- data.table(strategy_id = 1,
+                            # Excludes state R5
+                            state_id = state_ids[1:5],
+                            mean = c(P1 = 11336.85, # user
+                                     R1_P2 = 12989.16, # user
+                                     R2_P3 = 19559.52, # user
+                                     R3_P4 = 21475.06, # user
+                                     R4_P5 = 23578.20 # user
+                                     ),
+                            se = c(P1 = 1176.5551, # user
+                                   R1_P2 = 981.9048, # user
+                                   R2_P3 = 2077.8947, # user
+                                   R3_P4 = 4159.3015, # user
+                                   R4_P5 = 2951.2769 # user
+                            )
+                       )
+  ### sequence 2
+  oth_op[[2]] <- data.table(strategy_id = 2,
+                            # Excludes state R5
+                            state_id = state_ids[1:5],
+                            mean = c(P1 = 11336.85, # user
+                                     R1_P2 = 12989.16, # user
+                                     R2_P3 = 19559.52, # user
+                                     R3_P4 = 21475.06, # user
+                                     R4_P5 = 23578.20 # user
+                                     ),
+                            se = c(P1 = 1176.5551, # user
+                                   R1_P2 = 981.9048, # user
+                                   R2_P3 = 2077.8947, # user
+                                   R3_P4 = 4159.3015, # user
+                                   R4_P5 = 2951.2769 # user
+                            )
+                       )
+  ### sequence 3
+  oth_op[[3]] <- data.table(strategy_id = 3,
+                            # Excludes state R5
+                            state_id = state_ids[1:5],
+                            mean = c(P1 = 11336.85, # user
+                                     R1_P2 = 12989.16, # user
+                                     R2_P3 = 19559.52, # user
+                                     R3_P4 = 21475.06, # user
+                                     R4_P5 = 23578.20 # user
+                                     ),
+                            se = c(P1 = 1176.5551, # user
+                                   R1_P2 = 981.9048, # user
+                                   R2_P3 = 2077.8947, # user
+                                   R3_P4 = 4159.3015, # user
+                                   R4_P5 = 2951.2769 # user
+                            )
+                       )
+  other_outpatient_drugs <- do.call(rbind, oth_op)
+  rm(oth_op)
+  } else{
+    # othop_user_modify = 0, baseline other outpatient costs are used
+    load('../data/medcost_data.rda')
+    other_outpatient_drugs <- medcost_data$other_outpatient_drugs
+    rm(medcost_data)
+  }
+```
+
+
+\newpage
+
+#### Hospice Costs (Line of Treatment 5+)
+
+```{r medcostHospice, echo=TRUE}
+# States
+## 1. P1: On 1L therapy.
+## 2. R1_P2: relapsed on 1L; moved to 2L therapy.
+## 3. R2_P3: relapsed on 2L; moved to 3L therapy.
+## 4. R3_P4: relapsed on 3L; moved to 4L therapy.
+## 5. R4_P5: relapsed on 4L; moved to 5L therapy.
+## 6. R5: relapsed on 5L therapy.
+
+###########################################
+## user_modify = 0 use baseline hospice costs;
+## user_modify = 1 enter use baseline hospice costs
+
+hosp_user_modify = 1 
+if(hosp_user_modify ==1){
+  ## Hospice
+  hosp <- vector('list', length = 3)
+  ### sequence 1
+  hosp[[1]] <- data.table(strategy_id = 1,
+                          # Only state R5
+                          state_id = state_ids[length(state_ids)],
+                          mean = c(R5 = 115972.9 # user
+                                   ),
+                          se = c(R5 = 28993.22 # user
+                                 )
+                          )
+  ### sequence 2
+  hosp[[2]] <- data.table(strategy_id = 2,
+                          # Only state R5
+                          state_id = state_ids[length(state_ids)],
+                          mean = c(R5 = 115972.9 # user
+                                   ),
+                          se = c(R5 = 28993.22 # user
+                                 )
+                          )
+  ### sequence 3
+  hosp[[3]] <- data.table(strategy_id = 3,
+                          # Only state R5
+                          state_id = state_ids[length(state_ids)],
+                          mean = c(R5 = 115972.9 # user
+                                   ),
+                          se = c(R5 = 28993.22 # user
+                                 )
+                          )
+  hospice <- do.call(rbind, hosp)
+  rm(hosp)
+} else{
+  # hosp_user_modify = 0, baseline hospice costs are used
+  load('../data/medcost_data.rda')
+  hospice <- medcost_data$hospice
+  rm(medcost_data)
+}
+```
+
+
+\newpage
+
+### Drug Treatment Costs
+
+Cost of drug per mg.
+
+```{r rx_cost, echo=TRUE}
+# user_modify = 0 uses baseline treatment cost; 
+# user_modify = 1 uses values given by user.
+
+user_modify <- 1 
+if( user_modify == 1){
+  ## Cost are in USD/mg
+  drug_cost <- c(
+    Bortezomib = 74.11, # user
+    Daratumumab = 6.69, # user
+    Lenalidomide = 73.19, # user
+    Dexamethasone = 0.56, # user
+    ASCT = 109577, # user
+    Melphalan = 20.00, # user
+    Carfilzomib = 49.7, # user
+    Teclistamab = 59, # user
+    `Cilta-cel` =  478950, # user
+    Elotuzumab = 7.15, # user
+    Pomalidomide = 537, # user
+    Talquetamab = 259, # user
+    Selinexor = 91,  # user
+    Admin = 614.10 # user
+    )
+  } else {
+    # baseline WAC are used if user_modify =0
+    load('../data/base_wac.rda')
+    drug_cost <- base_wac$WAC
+    names(drug_cost) <- base_wac$Rx
+    rm(base_wac)
+  }
+```
+
+
+## Set Output File Names
+
+-   When knitting an R markdown file (.Rmd), the working directory is the one that contains the markdown file. For example, the working directory of the present markdown is `r getwd()`.
+-   Figures and tables with model results are saved in the output directory set by the user.
+-   We recommend creating a dedicated output directory.
+
+The following code:
+-   creates (if missing) such a dedicated directory with the name `output`. This directory is located (created) within the project root directory `~/JAN56830`, which is one level above the present markdown working directory. The name of the dedicated output directory can be changed by the user
+-   sets the names of files where figures and tables will be saved. Names can be modified by the user.
+
+```{r setOutputFileNames, echo = TRUE}
+# Names of the dedicated output directory and file names must not have spaces
+  
+## Default output path. 
+outputdir <- 'output' 
+
+## Name of Excel file where output tables for time to progression (TTP)
+## and time to death pre-progression are saved
+progression_tbl <- 'progressionTbl.xlsx'
+
+## Name of file where curve for PFS is saved
+survePFSline1File <- 'pfs1stline.pdf'
+
+## Name of file where curve for OS from second line survival is saved
+surveOSline1File <- 'os1stline.pdf'
+
+## Name of file where curve for PFS at second line survival is saved
+survePFSline2File <- 'pfs2ndline.pdf'
+
+## Name of file where curve for TTP at second line survival is saved
+surveTTPline2File <- 'ttp2ndline.pdf'
+
+## Name of file where curve for OS from second line survival is saved
+surveOSline2File <- 'os2ndline.pdf'
+
+## Name of 'pdf' file where the plot for state probabilities is saved 
+state_probFile <- 'stprobs.pdf'
+
+## Names of files where charts with economic outputs are saved
+qalys_nm <- 'qalys.pdf'
+txcosts_nm <- 'txcosts.pdf'
+medcosts_nm <- 'medcosts.pdf'
+totcosts_nm <- 'totcosts.pdf'
+
+# Name of file where the data needed to create economic charts is saved
+chart_data_nm <- 'chart_data.xlsx' 
+
+## Name of file where the  summary statistics of economic outputs are saved
+ecoSummary <- 'ce_sim_output.xlsx'
+
+## Name of file where cea output is saved
+cea_output <- "cea_output.xlsx"
+
+```
+ 
+ 
+<!---#################################################################################
+     #                   THIS IS THE END OF THE INPUT SECTION                        #
+     #                   NO USER EDITS AFTER THIS LINE.                              #
+     ################################################################################# ---> 
+
+----
+
+<!--- #################      Show Overview Model Input Parameters      ################# --->
+
+
+# Overview Model Input Parameters
+
+## Hazard Ratios
+
+Table \@ref(tab:HRtbl) displays the HRs (as uncertainty ranges) that will be applied to reference PFS curves
+
+```{r HRtbl, echo=FALSE}
+load("../data/weilph.data.rda") # loads reference survival data
+load("../data/nonMM.data.rda") # loads 3 element list with nonMM mortality, mPFS-based adjusted, mOS-based adjustements
+
+mod.fit <- vector( mode = 'list',length = length(transition_names))
+
+if (OS_HR==0){
+  mort.adj <- nonMM.fit[[6]]  #based upon pct of mortality up to median PFS
+} else if(OS_HR==1){
+  mort.adj <- nonMM.fit[[7]]  #based upon pct of mortality up to median OS
+} else {
+  mort.adj <- c(1,1,1,1,1)    #No adjustment
+}
+
+mod.fit <- vector( mode = 'list',length = length(transition_names))  #a list containing the final user-selected survival distributions
+if (OS_Braunlin) {  #populate with the user selected pre-fit distributions
+  mod.fit <- weilph.fit
+} else {
+  #Replace all of the overall survival curves with non-MM mortality curves from US LifeTables
+  mod.fit[[1]] <- weilph.fit[[1]]
+  mod.fit[[2]] <- nonMM.fit[[1]]
+  mod.fit[[3]] <- weilph.fit[[3]]
+  mod.fit[[4]] <- nonMM.fit[[2]]
+  mod.fit[[5]] <- weilph.fit[[5]]
+  mod.fit[[6]] <- nonMM.fit[[3]]
+  mod.fit[[7]] <- weilph.fit[[7]]
+  mod.fit[[8]] <- nonMM.fit[[4]]
+  mod.fit[[9]] <- weilph.fit[[9]]
+  mod.fit[[10]] <- nonMM.fit[[5]]
+  mod.fit[[11]] <- weilph.fit[[11]]  #Transitions from the palliative state are not adjusted by user selected parameters
+
+  mort.adj <- c(1,1,1,1,1) #override user selected adjustment-By Assumption
+}
+
+HR.data <- vector( mode = 'list',length = length(transition_names))
+names(HR.data) <- paste0('t',1:length(transition_names),'.hr')
+HR.data$t1.hr <- rbind(data.frame(low = c(s1 =1), up = c(s1 = 1)),
+                         kol.HR$t1.hr)
+HR.data$t2.hr <- rbind(data.frame(low = c(s1 =1), up = c(s1 = 1)),
+                          (1+(kol.HR$t1.hr-1)*mort.adj[1]))
+HR.data$t3.hr <- rbind(data.frame(low = c(s1 = .74), up = c(s1 = 1)),
+                         kol.HR$t3.hr)
+HR.data$t4.hr <- rbind(data.frame(low = c(s1 =.74), up = c(s1 = 1)),
+                         (1+(kol.HR$t3.hr-1)*mort.adj[2]))
+HR.data$t5.hr <- rbind(data.frame(low = c(s1 =.59), up = c(s1 = 1.54)),
+                         kol.HR$t5.hr)
+HR.data$t6.hr <- rbind(data.frame(low = c(s1 =.59), up = c(s1 = 1.54)),
+                         (1+(kol.HR$t5.hr-1)*mort.adj[3]))
+HR.data$t7.hr <- rbind(data.frame(low = c(s1 =1), up = c(s1 = 1)),
+                         kol.HR$t7.hr)
+HR.data$t8.hr <- rbind(data.frame(low = c(s1 =1), up = c(s1 = 1)),
+                         (1+(kol.HR$t7.hr-1)*mort.adj[4]))
+HR.data$t9.hr <- rbind(data.frame(low = c(s1 =.83), up = c(s1 = 1.3)),
+                         kol.HR$t9.hr)
+HR.data$t10.hr <- rbind(data.frame(low = c(s1 =.83), up = c(s1 = 1.3)),
+                         (1+(kol.HR$t9.hr-1)*mort.adj[5]))
+#Transitions from the palliative state are not adjusted by user selected parameters
+HR.data$t11.hr <- data.frame(low = c(s1=3,  st1 =1.05, st2=1.05, st3= 1.05), 
+                             up  = c(s1=3,  st1=1.1, st2=1.1, st3= 1.1))
+
+hr_names <- list(t1 = c('notst3', 'st3'), t2 = c('notst3', 'st3'),
+                 t3 = paste0('st',1:3), t4 = paste0('st',1:3),
+                 t5 = c('notst2', 'st2'), t6 = c('notst2', 'st2'),
+                 t7 = paste0('st',1:3), t8 = paste0('st',1:3),
+                 t9 = paste0('st',1:3), t10 = paste0('st',1:3),
+                 t11 = paste0('st',1:3))
+## Assign transition names to HR ranges
+hr <- copy(HR.data)
+hr <- lapply(1:11, function(k){data.table(hr[[k]][-1,])})
+hr <- lapply(1:11, function(k){hr[[k]][, strategy := hr_names[[k]]] })
+hr <- lapply(1:11, function(k){hr[[k]][,Transition:= transition_names[k]]})
+hr <- do.call(rbind, hr)
+temp <-data.table(strategy =c("st1", "st2", "st3", "notst2", "notst3"),
+                  Sequence = c("1", "2", "3", "Not 2", "Not 3"))
+hr <- left_join(hr, temp, by ="strategy")[, .(Sequence, Transition,  low, up)]
+hr <- hr[, Treatment := c(rep(c(notst3 = "DVRd + ASCT + DR",   st3 = "DVrd + DRd"),2),  # Line 1
+                          rep(c(st1 = "DKd", st2 = "Cilta-cel", st3= "Tec"),2), # Line 2
+                          rep(c(notst2 = "EloPd", st2 ="TalDara"),2),  # Line 3
+                          rep(c("Sd", "Tec", "Tal"), 2),   # Line 4
+                          rep(c("Cilta-cel", "SKd", "Kd"),2),  # Line 5
+                          rep("Paliative",3))] # Line 5+
+knitr::kable(hr[, c(1,5,2, 3,4)],
+  caption = "Hazard ratio for each treatment",
+  digits = 2, 
+  booktabs = TRUE, valign = "t"
+) %>%
+  kableExtra::kable_styling(bootstrap_options = "striped", latex_options = "hold_position" )
+
+rm(temp, transition_names, hr, hr_names) # remove objects that are no longer used
+```
+
+
+\newpage
+
+## Utility
+
+```{r utilInput, echo=FALSE}
+state_labels <- data.table(state = c("P1", "R1_P2", "R2_P3", "R3_P4", "R4_P5", "R5", "Death"),
+                           state_id = 1:(length(state_ids)+1))
+temp <- left_join(utility_data,state_labels, by = 'state_id')
+knitr::kable(temp[,.(strategy_id,state_id, state, mean, se )],
+             longtable = T,
+             booktabs = T, linesep = "",
+             caption = "Utility values used in the model",
+             align = "lcrrr") %>%
+  kableExtra::kable_styling("striped", 
+                            full_width =F,
+                            latex_options = "hold_position")
+rm(temp) 
+```
+
+\newpage
+
+## Other Medical Costs
+
+### Inpatient Costs
+
+```{r IPtbl, echo=FALSE}
+if(ipa_user_modify ==1){
+  temp0 <- data.table(strategy_id = 1:3,
+                      state_id = 6,
+                      mean = 0,
+                      se =0)
+  inpatient <- rbind(inpatient, temp0)
+  inpatient <- inpatient[order(strategy_id, state_id)]
+  rm(temp0)
+}
+
+temp <- left_join(inpatient,state_labels, by = 'state_id')
+knitr::kable(temp[,.(strategy_id,state_id, state, mean, se )],
+             longtable = T,
+             booktabs = T, linesep = "",
+             caption = "Inpatient cost by strategy and health state as used in the model",
+             align = "lcrrr") %>%
+  kableExtra::kable_styling("striped", 
+                            full_width =F,
+                            latex_options = "hold_position")
+# rm(temp, ipa_user_modify)
+```
+
+
+### Outpatient Costs
+
+```{r OPtbl, echo=FALSE}
+if(op_user_modify ==1){
+  temp0 <- data.table(strategy_id = 1:3,
+                      state_id = 6,
+                      mean = 0,
+                      se =0)
+  outpatient <- rbind(outpatient, temp0)
+  outpatient <- outpatient[order(strategy_id, state_id)]
+  rm(temp0)
+}
+temp <- left_join(outpatient,state_labels, by = 'state_id')
+knitr::kable(temp[,.(strategy_id,state_id, state, mean, se )],
+             longtable = T,
+             booktabs = T, linesep = "",
+             caption = "Outpatient costs by strategy and health state as used in the model",
+             align = "lcrrr") %>%
+  kableExtra::kable_styling("striped", 
+                            full_width =F,
+                            latex_options = "hold_position")
+rm(temp, op_user_modify)
+```
+
+
+\newpage
+
+### Other Outpatient Costs
+
+```{r OTHtbl, echo=FALSE}
+if(othop_user_modify ==1){
+  temp0 <- data.table(strategy_id = 1:3,
+                      state_id = 6,
+                      mean = 0,
+                      se =0)
+  other_outpatient_drugs <- rbind(other_outpatient_drugs, temp0)
+  other_outpatient_drugs <- other_outpatient_drugs[order(strategy_id, state_id)]
+  rm(temp0)
+}
+temp <- left_join(other_outpatient_drugs,state_labels, by = 'state_id')
+knitr::kable(temp[,.(strategy_id, state_id, state, mean, se )],
+             longtable = T,
+             booktabs = T, linesep = "",
+             caption = "Other outpatient costs by strategy and health state as used in the model",
+             align = "lcrrr") %>%
+  kableExtra::kable_styling("striped", 
+                            full_width =F,
+                            latex_options = "hold_position")
+rm(temp, othop_user_modify)
+```
+
+
+\newpage
+
+### Hospice Costs
+
+```{r Hospicetbl, echo=FALSE}
+if(hosp_user_modify ==1){
+  temp0 <- data.table(strategy_id = c(rep(1,5), rep(2,5), rep(3,5)),
+                      state_id = rep(1:5,3),
+                      mean = 0,
+                      se =0)
+  hospice <- rbind(hospice, temp0)
+  hospice <- hospice[order(strategy_id, state_id)]
+  rm(temp0)
+}
+
+temp <- left_join(hospice,state_labels, by = 'state_id')
+knitr::kable(temp[,.(strategy_id, state_id, state, mean, se )],
+             longtable = T,
+             booktabs = T, linesep = "",
+             caption = "Hospice costs (only after line 5) as used in the model",
+             align = "lcrrr") %>%
+  kableExtra::kable_styling("striped", 
+                            full_width =F,
+                            latex_options = "hold_position")
+
+rm(temp, hosp_user_modify, state_labels, state_ids)   # remove objects that are no longer used
+
+medcost_data <- list( inpatient = inpatient,
+                      outpatient = outpatient,
+                      other_outpatient_drugs = other_outpatient_drugs,
+                      hospice = hospice)
+```
+
+
+
+## Drug Treatment Costs
+
+<!--- Treatment cost and schedule tables ---> 
+
+```{r createTxTbls, echo=FALSE}
+# Create Treatment cost and schedule tables from input
+load("../data/base_wac.rda")
+temp <- data.table::data.table(Rx = names(drug_cost),WAC = drug_cost)
+update_wac <- left_join(base_wac[,.(Rx, Abbr, method_admin, bsa.weight_flag)],
+                        temp, by="Rx")
+
+load("../data/baselineTX_data.rda") # Baseline costs and schedule
+temp <- baselineTX_data[, names(baselineTX_data)!='Cost', with =F]
+cost_tx_seq <- cost.tx.data.fun(tx.tbl.fun(update_wac[,.(Rx, Abbr, WAC)], temp))
+rm(baselineTX_data, base_wac)
+
+```
+
+### Sequence 1
+
+```{r txSeq1, echo=FALSE}
+temp0 <- left_join(temp, 
+                    update_wac[,1:2],
+                    by=c("Drug_Code" = "Abbr"))[,.(LOT, Drug_Cost_Code, Rx) ]
+temp0 <- rbind(temp0, data.table(LOT =6, Drug_Cost_Code = "6_Paliative", Rx= "Paliative"))
+
+temp1 <- copy(cost_tx_seq[[1]])
+tx_seq <- do.call(rbind, lapply(1:6, function(k){temp1[[k]][, `:=`(Sequence = 1, LOT = k),]}))
+tx_seq <- left_join(tx_seq, temp0, by =c('Drug_Cost_Code', 'LOT')) # add name of drug
+tx_seq <- tx_seq[,.(Sequence, LOT, Rx, Drug_Cost_Code, Cost, t_init, t_stop)]
+
+
+knitr::kable(tx_seq,
+             longtable = T,
+             booktabs = T, linesep = "", digits = c(0,0,0,0,2,3,3),
+             caption = "Annualized drug treatment costs as used in the model for treatment sequence 1.",
+             align = "lcrrrr") %>%
+  kableExtra::kable_styling("striped", 
+                            full_width =F,
+                            latex_options = "hold_position")
+rm(temp1, temp, update_wac)
+```
+
+
+\newpage
+
+### Sequence 2
+
+```{r txSeq2, echo=FALSE}
+temp2 <- copy(cost_tx_seq[[2]])
+tx_seq <- do.call(rbind, lapply(1:6, function(k){temp2[[k]][, `:=`(Sequence = 2, LOT = k),]}))
+tx_seq <- left_join(tx_seq, temp0, by =c('Drug_Cost_Code', 'LOT')) # add name of drug
+tx_seq <- tx_seq[,.(Sequence, LOT, Rx, Drug_Cost_Code, Cost, t_init, t_stop)]
+
+knitr::kable(tx_seq,
+             longtable = T,
+             booktabs = T, linesep = "", digits = c(0,0,0,0,2,3,3),
+             caption = "Annualized drug treatment costs as used in the model for treatment sequence 2.",
+             align = "lcrrrr") %>%
+  kableExtra::kable_styling("striped", 
+                            full_width =F,
+                            latex_options = "hold_position")
+rm(temp2)
+```
+
+
+\newpage
+
+### Sequence 3
+
+```{r txSeq3, echo=FALSE}
+temp3 <- copy(cost_tx_seq[[3]])
+tx_seq <- do.call(rbind, lapply(1:6, function(k){temp3[[k]][, `:=`(Sequence = 3, LOT = k),]}))
+tx_seq <- left_join(tx_seq, temp0, by =c('Drug_Cost_Code', 'LOT')) # add name of drug
+tx_seq <- tx_seq[,.(Sequence, LOT, Rx, Drug_Cost_Code, Cost, t_init, t_stop)]
+
+knitr::kable(tx_seq,
+             longtable = T,
+             booktabs = T, linesep = "", digits = c(0,0,0,0,2,3,3),
+             caption = "Annualized drug treatment costs as used in the model for treatment sequence 3.",
+             align = "lcrrrr") %>%
+  kableExtra::kable_styling("striped", 
+                            full_width =F,
+                            latex_options = "hold_position")
+rm(temp0, temp3, tx_seq)
+```
+
+----
+
+<!--- #################      Create and Run Model in hesim      ################# 
+
+# Model Setup 
+
+The following R chunk defines the model structure for the `hesim` package. -->
+
+```{r mod_structure, echo=FALSE}
+# States ----
+tmat <- rbind( c(NA,1,NA,NA, NA, NA, 2),
+               c(NA, NA, 3, NA, NA, NA , 4),
+               c(NA, NA, NA, 5, NA, NA , 6),
+               c(NA, NA, NA, NA, 7, NA , 8),
+               c(NA, NA, NA, NA, NA, 9 , 10),
+               c(NA, NA, NA, NA, NA, NA , 11),
+               c(NA, NA, NA, NA, NA, NA , NA)
+               )
+
+colnames(tmat) <- rownames(tmat) <- c("P1", "R1_P2", "R2_P3", "R3_P4", "R4_P5","R5", "Death")
+
+# Strategies ----
+## Seq1: (DVRd + ASCT + DR )  > DKd         > EloPd   > Sd   > Cilta-cel ----
+## Seq2: (DVRd + ASCT + DR )  > Cilta-cel  > TalDara > Tec  > SKd ----
+## Seq3: (DVrd + DRd)         > Tec         > EloPd   > Tal  > Kd ----
+
+strategies <- data.table(strategy_id = c(1, 2, 3),
+                         strategy_name = c("Sequence 1", "Sequence 2", "Sequence 3"))
+
+ ### No population covariates (age, gender, etc) are defined for this project
+patients <- data.table(patient_id=1:n_patients)
+
+no_death_states <- ncol(tmat)-1
+states <- data.table(state_id = 1:no_death_states,
+                     state_name = rownames(tmat)[1:no_death_states]) # Non-death health states
+hesim_dat <- hesim_data( strategies = strategies,
+                         patients = patients,
+                         states = states)
+```
+
+<!-- The following chunk assigns labels to the transitions in the model.-->
+
+```{r transitions, echo=FALSE}
+# Transitions ----
+### Labels for the plots and summary tables.
+labs <- get_labels(hesim_dat)
+labs$transition_id <- c("P1-> R1_P2" = 1, #t1
+                        "P1 -> Death" = 2, #t2
+                        "R1_P2 -> R2_P3" = 3, #t3
+                        "R1_P2 -> Death" = 4, #t4
+                        "R2_P3 -> R3_P4" = 5, #t5
+                        "R2_P3 -> Death" = 6, #t6
+                        "R3_P4 -> R4_P5" = 7, #t7
+                        "R3_P4 -> Death" = 8, #t8
+                        "R4_P5 -> R5" = 9, #t9
+                        "R4_P5 -> Death" = 10, #t10
+                        "R5 -> Death" = 11) #t11
+```
+
+<!-- 
+# Parameters
+## Transitions
+
+In this model simulation, we consider predetermined survival inputs. These inputs were obtained by fitting Weibull survival models to pseudo individual patient data (IPD) generated by digitizing PFS curves from the following studies:
+
+-   Line 1, GRIFFIN [@griffin],
+-   Line 2, CANDOR [@candor],
+-   Line 3, ELOQUENT-3 [@eloquent3],
+-   Line 4, STORM [@storm],
+-   Line 5, Majes TEC-1 [@majestec].
+
+OS curves were derived from [@braunlin_21] for lines of treatment 1-5. -->
+
+<!-- This chunk loads the predetermined reference survival curves -->
+
+```{r survival_input, echo=FALSE}
+load("../data/weilph.data.rda")
+```
+
+<!-- this chunk creates the parameters for the transition probabilities -->
+
+```{r transitionInputs, echo=FALSE}
+library(magrittr)
+set.seed(3455) # Make results reproducible
+transmod_coef_def <- define_rng({
+  for(i in 1:length(labs$transition_id)){
+    assign(paste0("t",i),multi_normal_rng(mu = mod.fit[[i]]$res.t[,1], 
+                                          Sigma = vcov(mod.fit[[i]]))) 
+  }
+  list(
+    t1_shape = vec_to_dt(t1$shape),
+    t1_scale = t1[, -1,] |> (\(x){colnames(x)=c("cons",  "notst3", "st3"); return(x)})() ,
+    t2_shape = vec_to_dt(t2$shape),
+    t2_scale = t2[, -1,] |> (\(x){colnames(x)=c("cons", "notst3", "st3"); return(x)})() , 
+    t3_shape = vec_to_dt(t3$shape),
+    t3_scale = t3[, -1,] |> (\(x){colnames(x)=c("cons", "st1", "st2", "st3"); return(x)})() ,
+    t4_shape = vec_to_dt(t4$shape),
+    t4_scale = t4[, -1,] |> (\(x){colnames(x)=c("cons", "st1", "st2", "st3"); return(x)})() ,
+    t5_shape = vec_to_dt(t5$shape),
+    t5_scale = t5[, -1,] |> (\(x){colnames(x)=c("cons", "notst2", "st2"); return(x)})() ,
+    t6_shape = vec_to_dt(t6$shape),
+    t6_scale = t6[, -1,] |> (\(x){colnames(x)=c("cons", "notst2", "st2"); return(x)})() ,
+    t7_shape = vec_to_dt(t7$shape),
+    t7_scale = t7[, -1,] |> (\(x){colnames(x)=c("cons", "st1", "st2", "st3"); return(x)})() ,
+    t8_shape = vec_to_dt(t8$shape),
+    t8_scale = t8[, -1,] |> (\(x){colnames(x)=c("cons", "st1", "st2", "st3"); return(x)})() ,
+    t9_shape = vec_to_dt(t9$shape),
+    t9_scale = t9[, -1,] |> (\(x){colnames(x)=c("cons", "st1", "st2", "st3"); return(x)})() ,
+    t10_shape = vec_to_dt(t10$shape),
+    t10_scale = t10[, -1,] |> (\(x){colnames(x)=c("cons", "st1", "st2", "st3"); return(x)})() ,
+    t11_shape = vec_to_dt(t11$shape),
+    t11_scale = t11[, -1,] |> (\(x){colnames(x)=c("cons"); return(x)})()
+  )
+}, n = n_samples)
+
+transmod_coef <- eval_rng(transmod_coef_def)
+```
+
+<!-- This chunks applies the adjustments to survival curves based in the HR defined above. The model will sample survival parameters.-->
+
+<!-- Uniform sampling of HR (not used) -->
+<!-- ```{r hrAdjustment, echo=FALSE} -->
+<!-- # Adjust scale according to (sampled) hazard ratios from KOLs -->
+<!-- ### P1-> R1_P2 -->
+<!-- transmod_coef$t1_scale[,`:=`( -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t1.hr$low[1], HR.data$t1.hr$up[1])), -->
+<!--              notst3 = log(runif(n_samples,HR.data$t1.hr$low[2], HR.data$t1.hr$up[2])), -->
+<!--              st3 = log(runif(n_samples,HR.data$t1.hr$low[3], HR.data$t1.hr$up[3])) -->
+<!--   )] -->
+<!-- ### P1-> Death -->
+<!-- transmod_coef$t2_scale[,`:=`(  -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t2.hr$low[1], HR.data$t2.hr$up[1])), -->
+<!--              notst3 = log(runif(n_samples,HR.data$t2.hr$low[2], HR.data$t2.hr$up[2])), -->
+<!--              st3 = log(runif(n_samples,HR.data$t2.hr$low[3], HR.data$t2.hr$up[3])) -->
+<!--   )] -->
+<!-- ###  R1_P2 -> R2_P3 -->
+<!-- transmod_coef$t3_scale[,`:=`(  -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t3.hr$low[1], HR.data$t3.hr$up[1])), -->
+<!--              st1 = log(runif(n_samples,HR.data$t3.hr$low[2], HR.data$t3.hr$up[2])), -->
+<!--              st2 = log(runif(n_samples,HR.data$t3.hr$low[3], HR.data$t3.hr$up[3])), -->
+<!--              st3 = log(runif(n_samples,HR.data$t3.hr$low[4], HR.data$t3.hr$up[4])) -->
+<!--   )] -->
+<!-- ###  R1_P2 -> Death -->
+<!-- transmod_coef$t4_scale[,`:=`(  -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t4.hr$low[1], HR.data$t4.hr$up[1])), -->
+<!--              st1 = log(runif(n_samples,HR.data$t4.hr$low[2], HR.data$t4.hr$up[2])), -->
+<!--              st2 = log(runif(n_samples,HR.data$t4.hr$low[3], HR.data$t4.hr$up[3])), -->
+<!--              st3 = log(runif(n_samples,HR.data$t4.hr$low[4], HR.data$t4.hr$up[4])) -->
+<!--   )] -->
+<!-- ### R2_P3 -> R3_P4 -->
+<!-- transmod_coef$t5_scale[,`:=`(  -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t5.hr$low[1], HR.data$t5.hr$up[1])), -->
+<!--              notst2 = log(runif(n_samples,HR.data$t5.hr$low[2], HR.data$t5.hr$up[2])), -->
+<!--              st2 = log(runif(n_samples,HR.data$t5.hr$low[3], HR.data$t5.hr$up[3])) -->
+<!--   )] -->
+<!-- ### R2_P3 -> Death -->
+<!-- transmod_coef$t6_scale[ , `:=`(  -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t6.hr$low[1], HR.data$t6.hr$up[1])), -->
+<!--              notst2 = log(runif(n_samples,HR.data$t6.hr$low[2], HR.data$t6.hr$up[2])), -->
+<!--              st2 = log(runif(n_samples,HR.data$t6.hr$low[3], HR.data$t6.hr$up[3])) -->
+<!--   )] -->
+<!-- ### R3_P4 -> R4_P5 -->
+<!-- transmod_coef$t7_scale[, `:=`(  -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t7.hr$low[1], HR.data$t7.hr$up[1])),  -->
+<!--              st1 = log(runif(n_samples,HR.data$t7.hr$low[2], HR.data$t7.hr$up[2])), -->
+<!--              st2 = log(runif(n_samples,HR.data$t7.hr$low[3], HR.data$t7.hr$up[3])), -->
+<!--              st3 = log(runif(n_samples,HR.data$t7.hr$low[4], HR.data$t7.hr$up[4])) -->
+<!--   )] -->
+<!-- ### R3_P4 -> Death -->
+<!-- transmod_coef$t8_scale[, `:=`(  -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t8.hr$low[1], HR.data$t8.hr$up[1])),   -->
+<!--              st1 = log(runif(n_samples,HR.data$t8.hr$low[2], HR.data$t8.hr$up[2])), -->
+<!--              st2 = log(runif(n_samples,HR.data$t8.hr$low[3], HR.data$t8.hr$up[3])), -->
+<!--              st3 = log(runif(n_samples,HR.data$t8.hr$low[4], HR.data$t8.hr$up[4])) -->
+<!--   )] -->
+<!-- ### R4_P5 -> R5 -->
+<!-- transmod_coef$t9_scale[, `:=`(  -->
+<!--             cons = cons + log(runif(n_samples,HR.data$t9.hr$low[1], HR.data$t9.hr$up[1])),     -->
+<!--              st1 = log(runif(n_samples,HR.data$t9.hr$low[2], HR.data$t9.hr$up[2])), -->
+<!--              st2 = log(runif(n_samples,HR.data$t9.hr$low[3], HR.data$t9.hr$up[3])), -->
+<!--              st3 = log(runif(n_samples,HR.data$t9.hr$low[4], HR.data$t9.hr$up[4])) -->
+<!--   )] -->
+<!-- ### R4_P5 -> Death -->
+<!-- transmod_coef$t10_scale[, `:=`(  -->
+<!--              cons = cons + log(runif(n_samples,HR.data$t10.hr$low[1], HR.data$t10.hr$up[1])),       -->
+<!--              st1 = log(runif(n_samples,HR.data$t10.hr$low[2], HR.data$t10.hr$up[2])), -->
+<!--              st2 = log(runif(n_samples,HR.data$t10.hr$low[3], HR.data$t10.hr$up[3])), -->
+<!--              st3 = log(runif(n_samples,HR.data$t10.hr$low[4], HR.data$t10.hr$up[4])) -->
+<!--   )] -->
+<!-- ### R5 -> Death -->
+<!-- transmod_coef$t11_scale[, `:=`(  -->
+<!--             cons = cons + log(runif(n_samples,HR.data$t11.hr$low[1], HR.data$t11.hr$up[1])),      -->
+<!--             st1 = log(runif(n_samples,HR.data$t11.hr$low[2], HR.data$t11.hr$up[2])), -->
+<!--             st2 = log(runif(n_samples,HR.data$t11.hr$low[3], HR.data$t11.hr$up[3])), -->
+<!--             st3 = log(runif(n_samples,HR.data$t11.hr$low[4], HR.data$t11.hr$up[4])) -->
+<!--   )] -->
+
+<!-- rm(weilph.fit, nonMM.fit, mort.adj, mod.fit,  HR.data) -->
+<!-- ``` -->
+
+<!-- Normal sampling of log HR -->
+```{r hrAdjustment, echo=FALSE}
+# Adjust scale according to (sampled) hazard ratios from KOLs
+### P1-> R1_P2
+transmod_coef$t1_scale[,`:=`(
+             cons = cons + rnorm(n_samples, 
+                                      mean = .5*log(HR.data$t1.hr$low[1]*HR.data$t1.hr$up[1]),
+                                      sd = .5*log(HR.data$t1.hr$up[1]/HR.data$t1.hr$low[1])/qnorm(.975)),
+             notst3 = rnorm(n_samples,
+                                   mean = .5*log(HR.data$t1.hr$low[2]* HR.data$t1.hr$up[2]),
+                                   sd = .5*log(HR.data$t1.hr$up[2]/HR.data$t1.hr$low[2])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                               mean = .5*log(HR.data$t1.hr$low[3]* HR.data$t1.hr$up[3]),
+                               sd = .5*log(HR.data$t1.hr$up[3]/HR.data$t1.hr$low[3])/qnorm(.975))
+  )]
+### P1-> Death
+transmod_coef$t2_scale[,`:=`( 
+             cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t2.hr$low[1]*HR.data$t2.hr$up[1]),
+                                      sd = .5*log(HR.data$t2.hr$up[1]/HR.data$t2.hr$low[1])/qnorm(.975)),
+             notst3 = rnorm(n_samples,
+                                 mean = .5*log(HR.data$t2.hr$low[2]*HR.data$t2.hr$up[2]),
+                                 sd = .5*log(HR.data$t2.hr$up[2]/HR.data$t2.hr$low[2])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                               mean = .5*log(HR.data$t2.hr$low[3]*HR.data$t2.hr$up[3]),
+                               sd = .5*log(HR.data$t2.hr$up[3]/HR.data$t2.hr$low[3])/qnorm(.975))
+  )]
+###  R1_P2 -> R2_P3
+transmod_coef$t3_scale[,`:=`( 
+             cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t3.hr$low[1]* HR.data$t3.hr$up[1]),
+                                      sd = .5*log(HR.data$t3.hr$up[1]/HR.data$t3.hr$low[1])/qnorm(.975)),
+             st1 = rnorm(n_samples,
+                              mean = .5*log(HR.data$t3.hr$low[2]* HR.data$t3.hr$up[2]),
+                              sd = .5*log(HR.data$t3.hr$up[2]/HR.data$t3.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t3.hr$low[3]* HR.data$t3.hr$up[3]),
+                              sd = .5*log(HR.data$t3.hr$up[3]/HR.data$t3.hr$low[3])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t3.hr$low[4]* HR.data$t3.hr$up[4]),
+                              sd = .5*log(HR.data$t3.hr$up[4]/HR.data$t3.hr$low[4])/qnorm(.975))
+  )]
+###  R1_P2 -> Death
+transmod_coef$t4_scale[,`:=`( 
+             cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t4.hr$low[1]* HR.data$t4.hr$up[1]),
+                                      sd = .5*log(HR.data$t4.hr$up[1]/HR.data$t4.hr$low[1])/qnorm(.975)),
+             st1 = rnorm(n_samples,
+                              mean = .5*log(HR.data$t4.hr$low[2]* HR.data$t4.hr$up[2]),
+                              sd = .5*log(HR.data$t4.hr$up[2]/HR.data$t4.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t4.hr$low[3]* HR.data$t4.hr$up[3]),
+                              sd = .5*log(HR.data$t4.hr$up[3]/HR.data$t4.hr$low[3])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t4.hr$low[4]* HR.data$t4.hr$up[4]),
+                              sd = .5*log(HR.data$t4.hr$up[4]/HR.data$t4.hr$low[4])/qnorm(.975))
+  )]
+### R2_P3 -> R3_P4
+transmod_coef$t5_scale[,`:=`( 
+             cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t5.hr$low[1]* HR.data$t5.hr$up[1]),
+                                      sd = .5*log(HR.data$t5.hr$up[1]/HR.data$t5.hr$low[1])/qnorm(.975)),
+             notst2 = rnorm(n_samples,
+                                 mean = .5*log(HR.data$t5.hr$low[2]*HR.data$t5.hr$up[2]),
+                                 sd = .5*log(HR.data$t5.hr$up[2]/HR.data$t5.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                                 mean = .5*log(HR.data$t5.hr$low[3]*HR.data$t5.hr$up[3]),
+                                 sd = .5*log(HR.data$t5.hr$up[3]/HR.data$t5.hr$low[3])/qnorm(.975))
+  )]
+### R2_P3 -> Death
+transmod_coef$t6_scale[ , `:=`( 
+             cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t6.hr$low[1]* HR.data$t6.hr$up[1]),
+                                      sd = .5*log(HR.data$t6.hr$up[1]/HR.data$t6.hr$low[1])/qnorm(.975)),
+             notst2 = rnorm(n_samples,
+                                 mean = .5*log(HR.data$t6.hr$low[2]*HR.data$t6.hr$up[2]),
+                                 sd = .5*log(HR.data$t6.hr$up[2]/HR.data$t6.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                                 mean = .5*log(HR.data$t6.hr$low[3]*HR.data$t6.hr$up[3]),
+                                 sd = .5*log(HR.data$t6.hr$up[3]/HR.data$t6.hr$low[3])/qnorm(.975))
+  )]
+### R3_P4 -> R4_P5
+transmod_coef$t7_scale[, `:=`( 
+             cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t7.hr$low[1]* HR.data$t7.hr$up[1]),
+                                      sd = .5*log(HR.data$t7.hr$up[1]/HR.data$t7.hr$low[1])/qnorm(.975)),
+             st1 = rnorm(n_samples,
+                              mean = .5*log(HR.data$t7.hr$low[2]* HR.data$t7.hr$up[2]),
+                              sd = .5*log(HR.data$t7.hr$up[2]/HR.data$t7.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t7.hr$low[3]* HR.data$t7.hr$up[3]),
+                              sd = .5*log(HR.data$t7.hr$up[3]/HR.data$t7.hr$low[3])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t7.hr$low[4]* HR.data$t7.hr$up[4]),
+                              sd = .5*log(HR.data$t7.hr$up[4]/HR.data$t7.hr$low[4])/qnorm(.975))
+  )]
+### R3_P4 -> Death
+transmod_coef$t8_scale[, `:=`( 
+             cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t8.hr$low[1]* HR.data$t8.hr$up[1]),
+                                      sd = .5*log(HR.data$t8.hr$up[1]/HR.data$t8.hr$low[1])/qnorm(.975)),
+             st1 = rnorm(n_samples,
+                              mean = .5*log(HR.data$t8.hr$low[2]* HR.data$t8.hr$up[2]),
+                              sd = .5*log(HR.data$t8.hr$up[2]/HR.data$t8.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t8.hr$low[3]* HR.data$t8.hr$up[3]),
+                              sd = .5*log(HR.data$t8.hr$up[3]/HR.data$t8.hr$low[3])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t8.hr$low[4]* HR.data$t8.hr$up[4]),
+                              sd = .5*log(HR.data$t8.hr$up[4]/HR.data$t8.hr$low[4])/qnorm(.975))
+  )]
+### R4_P5 -> R5
+transmod_coef$t9_scale[, `:=`( 
+            cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t9.hr$low[1]* HR.data$t9.hr$up[1]),
+                                      sd = .5*log(HR.data$t9.hr$up[1]/HR.data$t9.hr$low[1])/qnorm(.975)),
+             st1 = rnorm(n_samples,
+                              mean = .5*log(HR.data$t9.hr$low[2]* HR.data$t9.hr$up[2]),
+                              sd = .5*log(HR.data$t9.hr$up[2]/HR.data$t9.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t9.hr$low[3]* HR.data$t9.hr$up[3]),
+                              sd = .5*log(HR.data$t9.hr$up[3]/HR.data$t9.hr$low[3])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t9.hr$low[4]* HR.data$t9.hr$up[4]),
+                              sd = .5*log(HR.data$t9.hr$up[4]/HR.data$t9.hr$low[4])/qnorm(.975))
+  )]
+### R4_P5 -> Death
+transmod_coef$t10_scale[, `:=`( 
+             cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t10.hr$low[1]* HR.data$t10.hr$up[1]),
+                                      sd = .5*log(HR.data$t10.hr$up[1]/HR.data$t10.hr$low[1])/qnorm(.975)),
+             st1 = rnorm(n_samples,
+                              mean = .5*log(HR.data$t10.hr$low[2]* HR.data$t10.hr$up[2]),
+                              sd = .5*log(HR.data$t10.hr$up[2]/HR.data$t10.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t10.hr$low[3]* HR.data$t10.hr$up[3]),
+                              sd = .5*log(HR.data$t10.hr$up[3]/HR.data$t10.hr$low[3])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t10.hr$low[4]* HR.data$t10.hr$up[4]),
+                              sd = .5*log(HR.data$t10.hr$up[4]/HR.data$t10.hr$low[4])/qnorm(.975))
+  )]
+### R5 -> Death
+transmod_coef$t11_scale[, `:=`( 
+            cons = cons + rnorm(n_samples,
+                                      mean = .5*log(HR.data$t11.hr$low[1]* HR.data$t11.hr$up[1]),
+                                      sd = .5*log(HR.data$t11.hr$up[1]/HR.data$t11.hr$low[1])/qnorm(.975)),
+             st1 = rnorm(n_samples,
+                              mean = .5*log(HR.data$t11.hr$low[2]* HR.data$t11.hr$up[2]),
+                              sd = .5*log(HR.data$t11.hr$up[2]/HR.data$t11.hr$low[2])/qnorm(.975)),
+             st2 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t11.hr$low[3]* HR.data$t11.hr$up[3]),
+                              sd = .5*log(HR.data$t11.hr$up[3]/HR.data$t11.hr$low[3])/qnorm(.975)),
+             st3 =  rnorm(n_samples,
+                              mean = .5*log(HR.data$t11.hr$low[4]* HR.data$t11.hr$up[4]),
+                              sd = .5*log(HR.data$t11.hr$up[4]/HR.data$t11.hr$low[4])/qnorm(.975))
+  )]
+
+#rm(weilph.fit, nonMM.fit, mort.adj, mod.fit,  HR.data)
+
+```
+
+<!-- The following chunk defines the (sampled) survival parameters for each transition in the model used by the `hesim` package.-->
+
+```{r trans_params_coef, echo=FALSE}
+transmod_params <- params_surv_list(
+  # 1. P1-> R1_P2
+  params_surv(coefs = list(shape = transmod_coef$t1_shape,
+                           scale = transmod_coef$t1_scale), 
+              dist = "weibullPH"),
+  # 2. P1 -> Death
+  params_surv(coefs = list(shape = transmod_coef$t2_shape,
+                           scale = transmod_coef$t2_scale), 
+              dist = "weibullPH"),
+  # 3. R1_P2 -> R2_P3
+  params_surv(coefs = list(shape = transmod_coef$t3_shape,
+                           scale = transmod_coef$t3_scale), 
+              dist = "weibullPH"),
+  # 4. R1_P2 -> Death
+  params_surv(coefs = list(shape = transmod_coef$t4_shape,
+                           scale = transmod_coef$t4_scale), 
+              dist = "weibullPH"),
+  # 5. R2_P3 -> R3_P4
+  params_surv(coefs = list(shape = transmod_coef$t5_shape,
+                           scale = transmod_coef$t5_scale), 
+              dist = "weibullPH"),
+  # 6. R2_P3 -> Death
+  params_surv(coefs = list(shape = transmod_coef$t6_shape,
+                           scale = transmod_coef$t6_scale), 
+              dist = "weibullPH"),
+  # 7. R3_P4 -> R4_P5
+  params_surv(coefs = list(shape = transmod_coef$t7_shape,
+                           scale = transmod_coef$t7_scale), 
+              dist = "weibullPH"),
+  # 8 R3_P4 -> Death
+  params_surv(coefs = list(shape = transmod_coef$t8_shape,
+                           scale = transmod_coef$t8_scale),
+              dist = "weibullPH"),
+  # 9. R4_P5 -> R5
+  params_surv(coefs = list(shape = transmod_coef$t9_shape,
+                           scale = transmod_coef$t9_scale),
+              dist = "weibullPH"),
+  # 10. R4_P5 -> Death
+  params_surv(coefs = list(shape = transmod_coef$t10_shape,
+                           scale = transmod_coef$t10_scale),
+              dist = "weibullPH"),
+  # 11. R5 -> Death
+  params_surv(coefs = list(shape = transmod_coef$t11_shape,
+                           scale = transmod_coef$t11_scale),
+              dist = "weibullPH")
+)
+```
+
+<!-- 
+## Utility and Costs -->
+
+```{r utility_cost_tables, echo=FALSE}
+
+utility_tbl <- stateval_tbl(utility_data, dist = "beta")
+
+## Inpatient costs ----
+medcostip_tbl <- stateval_tbl(medcost_data$inpatient,
+                            dist = "gamma")
+## Outpatient costs ----
+medcostop_tbl <- stateval_tbl(medcost_data$outpatient,
+                              dist = "gamma")
+## Other outpatient drug costs ----
+medcostoth_tbl <- stateval_tbl(medcost_data$other_outpatient_drugs,
+                              dist = "gamma")
+## Hospice costs (after progression from line 5) ----
+medcosthospice_tbl <- stateval_tbl(medcost_data$hospice,
+                              dist = "gamma")
+```                              
+
+<!-- 
+# Simulation
+## Constructing the Model
+
+### Disease Model
+ 
+The next lines of code create the individual-level continuous time state transition model. It uses the transition parameters (`transmod_paras`), the population data along with the strategies (`transmod_data`), and the matrix of valid transitions within the model (`tmat`)-->
+
+```{r transition_model, echo=FALSE}
+transmod_data <- expand(hesim_dat, by = c("strategies", "patients"))
+
+transmod_data[, cons := 1]  ## constant term created by transmod
+transmod_data[, st1:= ifelse(strategy_name == "Sequence 1",1,0) ]
+transmod_data[, st2:= ifelse(strategy_name == "Sequence 2",1,0) ]
+transmod_data[, st3:= ifelse(strategy_name == "Sequence 3",1,0) ]
+transmod_data[, notst3:= ifelse(strategy_name != "Sequence 3",1,0)]
+transmod_data[, notst2:= ifelse(strategy_name != "Sequence 2",1,0)]
+
+
+# Transition model ----
+transmod <- create_IndivCtstmTrans(transmod_params, 
+                                   input_data = transmod_data,
+                                   trans_mat = tmat,
+                                   clock = "reset")
+```
+
+<!-- 
+### Utility Model
+The chunk below creates the utility model -->
+
+```{r utilmod, echo=FALSE}
+utilitymod <- create_StateVals(utility_tbl, n = n_samples, hesim_data = hesim_dat)
+```
+
+<!-- 
+### Cost Model
+The chunk below creates the cost model.-->
+
+```{r costmod, echo=FALSE}
+
+medcostipmod <- create_StateVals(medcostip_tbl, n = n_samples, hesim_data = hesim_dat)
+medcostopmod <- create_StateVals(medcostop_tbl, n = n_samples, hesim_data = hesim_dat)
+medcostothmod <- create_StateVals(medcostoth_tbl, n = n_samples, hesim_data = hesim_dat)
+medcosthospicemod <- create_StateVals(medcosthospice_tbl, n = n_samples, hesim_data = hesim_dat)
+
+costmods <- list(Inpatient = medcostipmod,
+                 Outpatient = medcostopmod,
+                 OtherOutRx = medcostothmod,
+                 HOSPICE = medcosthospicemod)
+```
+
+<!--
+### Combining the Models
+The full economic model is constructed by combining the disease, utility, and cost models. -->
+
+```{r econmod, echo=FALSE}
+
+econmod <- IndivCtstm$new(trans_model = transmod,
+                          utility_model = utilitymod,
+                          cost_models = costmods
+)
+```
+
+<!--- 
+## Simulating Outcomes
+### Disease Progression
+
+The next chunk runs the disease progression model --->
+
+```{r disprog, echo=FALSE}
+# Simulation ----
+econmod$sim_disease()
+```
+
+<!---
+### QALYs and Costs
+
+A discount factor $v=(1+r)^{-1}$, $0\leq r<1$, is used in the model to estimate total discounted QALYs, medical and treatment costs. The following chunk defines the discount rate and factors. -->
+
+```{r discFactor, echo=FALSE}
+vQ <- 1/(1+discQ) # discount factor for QALYs
+vC <- 1/(1+discC) # discount factor for Costs
+```
+
+<!--- The next chunk performs the estimation of expected QALYs --> 
+
+```{r qalysim, echo=FALSE}
+# QALYs model ----
+econmod$sim_qalys(dr = discQ)
+```
+
+<!-- The next chunk performs the estimation of total medical costs.-->
+
+```{r medcostsim, echo=FALSE}
+# Medical Costs model ----
+econmod$sim_costs(dr = discQ)
+```
+
+<!-- Discounted treatment cost for any line of treatment are estimated based on the drug components and their schedules within each line of treatment. Costs are incurred within the time at which a specific line of treatment starts and until progression occurs.  The cost of treatment is evaluated at the individual level. This is done taking into account the individual sojourn times between transitions, and the scheduling for each drug used. Suppose for example that an individual enters state $i$ at time  $T_0$ and then transitions to state  $j$ at time $T_1$. Suppose that drug D1 is used starting at time $t_0$ after entering state $i$, and ending at time $t_1$. If the annualized price of drug D1 is $C$, then the cost accrued by this individual for drug D1 is
+
+ \begin{align}
+C\,\int^{T_1}_{T_0}\mathbb{1}_{[t_0,t_1]}(s)v^s\,ds= C\frac{ v^{\min(T_0+ t_0 ,T_1)} - v^{\min(T_0+ t_1 ,T_1)}}{-\log(v)}
+ (\#eq:three)
+ \end{align}
+ 
+ The following chunk implements the computation described in \@ref(eq:three) for each drug used in during the period  time between transitions. -->
+ 
+```{r txcosts, echo=FALSE}
+## Treatment cost estimation ----
+disprog <- copy(econmod$disprog_)
+
+#ptm <- proc.time()
+disprog[,TX.cost:=cost_eval(strategy_id, from, time_start, time_stop, disc_fact = vC)]
+#proc.time() - ptm
+
+txcosts <- disprog[,.(costs =mean(TX.cost)), 
+                   by = .(sample,  grp_id, strategy_id, from)]
+txcosts <- txcosts[, `:=`(category= "Drug", dr = discC)][, .(sample, strategy_id, 
+                                                            grp_id, from, dr, 
+                                                            category, costs),]
+names(txcosts)[names(txcosts) == "from"] <- "state_id"
+econmod$costs_ <- rbind(econmod$costs_, txcosts)
+```
+
+<!--- ##############  Display and Save Model Output  ##################--->
+
+# Model Output
+
+```{r outputPath, echo=FALSE}
+## Dedicated output directory
+outputdir <- paste0("../", outputdir) 
+ if(!dir.exists(outputdir)){
+  dir.create(outputdir)
+ }
+```
+
+## Course of Disease
+
+### State Probabilities
+
+<!-- The time evolution of state probabilities (probability that on individual is in any given state at any point in time) are also useful to evaluate the performance of the different sequence strategies. The chunk below creates a group of graphs showing the state probabilities (see Figure  @ref(fig:figSP)).-->
+
+```{r figSP, fig.align='center', fig.cap="\\label{fig:figSP}State Probabilities for Each Line of Treatment per Sequence", fig.pos='H', echo=FALSE, warning=FALSE, fig.dim = c(6, 8) }
+
+ ## Plot of state probabilities ----
+econmod$sim_stateprobs(t = seq(0, 30, .5)) 
+summarize_stprobs <- function(stateprobs){
+  x <- stateprobs[, .(prob_mean = mean(prob), 
+                      low_prob_2.5 = quantile(prob, .025),
+                      up_prob_2.5 = quantile(prob, .975)),
+                  by = c("strategy_id", "state_id", "t")]
+  set_labels(x, labels = labs, new_names = c("strategy_name", "state_name"))
+}
+
+stprobs <- summarize_stprobs(econmod$stateprobs_)
+ggplot(stprobs, aes(x = t, y = prob_mean, col = strategy_name)) +
+  geom_line() +  
+  geom_ribbon(aes(ymin = low_prob_2.5, ymax = up_prob_2.5, fill = strategy_name), alpha = 0.2, linetype=0) +
+  facet_wrap(~state_name,ncol = 2) + 
+  xlab("Years") + ylab("Probability in Health State") +
+  # scale_color_discrete(name = "Strategy") +
+  theme(legend.position = "bottom", 
+        legend.title = element_blank())
+```
+
+-   This plot is saved to `r file.path(outputdir, state_probFile)`.
+
+```{r state_probs, echo=FALSE}
+## save the state probability plots into the dedicated output directory
+ggsave(file.path(outputdir, state_probFile), width = 10, height = 15, units = "cm")
+
+## remove objects that are no longer needed
+rm(state_probFile)
+
+```
+
+\newpage
+
+<!-- # TTP, TTDP, PSF and OS summary tables -->
+<!-- The next chunks use the output of the simulation model to create tables with summary statistics of the time spent in each state.-->
+
+```{r time_spent, echo=FALSE}
+econmod$disprog_[, `:=`(transition = paste0(from,'_',to), time_spent= time_stop - time_start), ]
+# Some useful summary tables ----
+disprog <- copy(econmod$disprog_)
+
+disprog <- disprog[,.( progressed = .N,
+  mean_time_spent = mean(time_spent), 
+  median_time_spent = median(time_spent)
+  ),
+  by = .(sample, strategy_id, transition, from, to,final)]
+
+##  Time to progression summary ----
+summary_dis <- disprog[,.( mean_progressed = mean(progressed),
+                           mean_time_spent = mean(mean_time_spent), 
+                           med_time_spent = mean(median_time_spent),
+                           time_spent05 = quantile(mean_time_spent,.05), 
+                           time_spent95 = quantile(mean_time_spent,.95)), 
+                       .(strategy_id, from, to, transition)
+                       ][order(strategy_id, transition)]
+per_line <- summary_dis[, .(mean_entry = sum(mean_progressed)), by = .(strategy_id,from)]
+
+summary_dis <- left_join(summary_dis,per_line,by = c("strategy_id","from"))
+
+summary_dis <- summary_dis[,.(strategy_id, from, mean_entry, to, mean_progressed,  
+                              med_time_spent, mean_time_spent, time_spent05, time_spent95)]
+summary_dis[, `:=`(proportion= ifelse(mean_entry==0,"-", round(mean_progressed/mean_entry,2)),
+                   init_prop = round(mean_entry/n_patients,2))
+            ]
+names(summary_dis) <- c("Strategy", "from", "Entered",
+                         "to", "Exited",  "Median", "Mean",
+                         "Low 5%", "Top 5%", "Proportion", "% of initial pop")
+summary_dis <- summary_dis[, `:=`(`From Line` = ifelse(from == 6, "5+", from),
+                                  `To Line` = ifelse(to == 7, "D", ifelse(to == 6, "5+",to)),
+                                  `Median Duration` = round(Median,2),
+                                  `Mean Duration` = round(Mean,2),
+                                  `95% - CI` = paste0("(",round(`Low 5%`,2),", ",
+                                  round(`Top 5%`,2), ")")
+                                  )]
+summary_dis[, Transition := paste(`From Line`,'to', `To Line`)]
+summary_dis <- summary_dis[,.(Strategy, `From Line`, `To Line`,
+                              Transition, Proportion, `% of initial pop`,
+                              `Median Duration`, `Mean Duration`,
+                              `95% - CI`)]
+
+rm(disprog) # remove object not needed anymore
+```
+
+### Time to Progression
+<!-- The chunk below creates a table (see Table @ref(tab:summaryProg)) with summary statistics of the time to progression (TTP). -->
+
+```{r summaryProg, echo=FALSE}
+## Progression and survival per line of treatment summary ----
+tbl_summaryP <- summary_dis[`To Line`!= "D", .(
+  Strategy, `% of initial pop`,
+  Transition, `Proportion`,
+  `Median Duration`, `Mean Duration`, 
+  `95% - CI`)]
+names(tbl_summaryP)[c(4,5,6)] <- c("% who progressed", "Median TTP", "Mean TTP")
+ 
+knitr::kable(tbl_summaryP,
+  longtable = T,
+  booktabs = T, 
+  caption = "Time to Progression (TTP) per Line of Treatment",
+  align = "lcrrrr") %>%
+  kableExtra::kable_styling('striped', latex_options = "hold_position")
+```
+
+
+<!-- A comparison of time to progression at second line of treatment is done to evaluate the performance of the different sequence strategies. The chunk bellow creates a graph (see Figure   @ref(fig:figTTPl2)) displaying the PFS for  individuals who progressed to second line and progressed to third line.-->
+
+```{r figTTPl2,  fig.align='center', fig.cap="\\label{fig:figTTPl2}Time to Progression at Second Line", fig.pos='H', echo=FALSE, warning=FALSE}
+# Time to Progression at Second Line
+pfsl2.data <- econmod$disprog_[from ==2 & final==0,] 
+pfs_data <- lapply(seq(0,30, by =.5), 
+                    function(x){data.table(t=x,pfsl2.data[,.(prob = mean(time_spent>x)),
+                                                          by =.(sample,strategy_id)])})
+pfs_data <- do.call(rbind, pfs_data)
+pfs_data <- pfs_data[, .(prob_mean = mean(prob),
+                         ci_l = quantile(prob, .025),
+                         ci_u = quantile(prob, .975)),
+                     by = .(t,strategy_id)]
+setorder(pfs_data, strategy_id, t)
+set_labels(pfs_data, labels = labs, new_names = c("strategy_name"))
+ggplot(pfs_data, aes(x = t, y = prob_mean, col = strategy_name)) +
+  geom_line() +  ylim(0,1) +
+  geom_ribbon(aes(ymin = ci_l, ymax = ci_u, fill = strategy_name), alpha = .2, linetype=0) +
+  xlab("Years") + ylab("TTP at Second Line") +
+  #ggtitle("Time to Progression at Second Line") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+```
+
+-   This figure is saved to `r file.path(outputdir, surveTTPline2File)`.
+
+```{r plotTTPl2, echo=FALSE}
+## Save plot in the dedicated output directory
+ggsave(file.path(outputdir, surveTTPline2File), width = 20, height = 15, units = "cm")
+
+# remove object which will be no longer used
+rm(surveTTPline2File, pfsl2.data, pfs_data) # remove objects that are no longer used
+```
+
+
+
+### Time to Death Pre-Progression
+<!-- The next chunk creates a table (see Table @ref(tab:summaryDeath)) with summary statistics of the time to death pre-transition. -->
+
+```{r summaryDeath, echo=FALSE, message=FALSE}
+# progression to death summary
+tbl_summaryD <- summary_dis[`To Line`== "D", .(
+  Strategy, `% of initial pop`,
+  Transition, `Proportion`,
+  `Median Duration`, `Mean Duration`, 
+  `95% - CI`)]
+names(tbl_summaryD)[c(4,5,6)] <- c("% who died", "Median TTDP", "Mean TTDP")
+
+knitr::kable(tbl_summaryD,
+  longtable = T,
+  booktabs = T,
+  linesep = linesep(c(6,6,6)),
+  caption = "Time to death pre-pregression (TTDP) per line of treatment",
+  align = "lcrrrr") %>%
+  kableExtra::kable_styling('striped', latex_options = "hold_position")
+
+rm(summary_dis) # remove objects that are no longer needed
+```
+
+### Progression Free Survival
+
+<!--- The next chunk creates a table (see Table @ref(tab:summaryPFS)) with summary statistics of progression free survival (PFS), that is time to progression or death pre-progression. --->
+
+```{r summaryPFS, echo=FALSE, message=FALSE}
+summary_dis <- econmod$disprog_[,.( mean_time_spent = mean(time_spent), 
+                                median_time_spent = median(time_spent)
+                                ),
+                            by = .(sample, strategy_id, from)]
+
+##  Time to progression summary ----
+summary_dis <- summary_dis[,.(med_time_spent = mean(median_time_spent),
+                          mean_time_spent = mean(mean_time_spent), 
+                          time_spent05 = quantile(mean_time_spent,.05), 
+                          time_spent95 = quantile(mean_time_spent,.95)), 
+                       .(strategy_id, from)
+                       ][order(strategy_id)]
+per_line[,prop_init := mean_entry/n_patients]
+summary_dis <- left_join(summary_dis, per_line[,.(strategy_id, from, prop_init)],
+                         by = c('strategy_id', 'from'))
+names(summary_dis) <- c("Strategy", "LOT",
+                          "Median", "Mean",
+                         "Low 5%", "Top 5%", "% of initial pop")
+summary_dis <- summary_dis[, `:=`(`LOT` = ifelse(LOT == 6, "5+", LOT),
+                                  `Median PFS` = round(Median,2),
+                                  `Mean PFS` = round(Mean,2),
+                                  `95% - CI` = paste0("(",round(`Low 5%`,2),", ",
+                                  round(`Top 5%`,2), ")")
+                                  )]
+
+# PFS tbl
+tbl_summaryPFS <- summary_dis[, .(Strategy, `% of initial pop`, LOT,
+            `Median PFS`, `Mean PFS`, 
+            `95% - CI`)]
+tbl_summaryPFS$`% of initial pop` <- round(tbl_summaryPFS$`% of initial pop`,2)
+
+knitr::kable(tbl_summaryPFS,
+  longtable = T,
+  booktabs = T,
+  linesep = linesep(c(6,6,6)),
+  caption = "Progression free survival (PFS) per line of treatment",
+  align = "rrrrr") %>%
+  kableExtra::kable_styling('striped', latex_options = "hold_position")
+
+ rm(summary_dis)
+```
+
+
+<!-- A comparison of progression free survival (PFS) is done to evaluate the performance of the different sequence strategies. The chunk bellow creates a graph (see Figure   @ref(fig:figPFSl1)) displaying PFS. -->
+
+
+```{r figPFSl1,  fig.align='center', fig.cap="\\label{fig:figPFSl1}Progression Free Survival from Start of First Line Treatment", fig.pos='H', echo=FALSE, warning=FALSE}
+#Progression Free Survival from Start of First Line Treatment
+pfsl1.data <- econmod$disprog_[from ==1,] 
+pfs_data <- lapply(seq(0,40, by =.5), 
+                    function(x){data.table(t=x,pfsl1.data[,.(prob = mean(time_spent>x)),
+                                                          by =.(sample,strategy_id)])})
+pfs_data <- do.call(rbind, pfs_data)
+pfs_data <- pfs_data[, .(prob_mean = mean(prob),
+                         ci_l = quantile(prob, .025),
+                         ci_u = quantile(prob, .975)),
+                     by = .(t,strategy_id)]
+setorder(pfs_data, strategy_id, t)
+set_labels(pfs_data, labels = labs, new_names = c("strategy_name"))
+ggplot(pfs_data, aes(x = t, y = prob_mean, col = strategy_name)) +
+  geom_line() +  ylim(0,1) +
+  geom_ribbon(aes(ymin = ci_l, ymax = ci_u, fill = strategy_name), alpha = .2, linetype=0) +
+  xlab("Years") + ylab("PFS from Start of First Line Treatment") +
+  #ggtitle("Progression Free Survival from Start of First Line Treatment") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+```
+
+-   This figure is saved to `r file.path(outputdir, survePFSline1File)`.
+
+```{r plotPFSl1, echo=FALSE}
+## Save plot in the dedicated output directory
+ggsave(file.path(outputdir, survePFSline1File), width = 20, height = 15, units = "cm")
+
+# remove object which will be no longer used
+rm(survePFSline1File, pfsl1.data, pfs_data) # remove objects that are no longer used
+```
+
+
+
+<!-- A comparison of PFS  at second line of treatment is done to evaluate the performance of the different sequence strategies. The chunk bellow creates a graph (see Figure   @ref(fig:figPFSl2)) displaying the PFS for  individuals who progressed to second line. -->
+
+
+```{r figPFSl2,  fig.align='center', fig.cap="\\label{fig:figPFSl2}Progression Free Survival at Second Line", fig.pos='H', echo=FALSE, warning=FALSE}
+# Progression Free Survival at Second Line
+pfsl2.data <- econmod$disprog_[from ==2,] 
+pfs_data <- lapply(seq(0,30, by =.5), 
+                    function(x){data.table(t=x,pfsl2.data[,.(prob = mean(time_spent>x)),
+                                                          by =.(sample,strategy_id)])})
+pfs_data <- do.call(rbind, pfs_data)
+pfs_data <- pfs_data[, .(prob_mean = mean(prob),
+                         ci_l = quantile(prob, .025),
+                         ci_u = quantile(prob, .975)),
+                     by = .(t,strategy_id)]
+setorder(pfs_data, strategy_id, t)
+set_labels(pfs_data, labels = labs, new_names = c("strategy_name"))
+ggplot(pfs_data, aes(x = t, y = prob_mean, col = strategy_name)) +
+  geom_line() +  ylim(0,1) +
+  geom_ribbon(aes(ymin = ci_l, ymax = ci_u, fill = strategy_name), alpha = .2, linetype=0) +
+  xlab("Years") + ylab("PFS at Second Line") +
+  #ggtitle("Progression Free Survival at Second Line") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+```
+
+-   This figure is saved to `r file.path(outputdir, survePFSline2File)`.
+
+```{r plotPFS2l, echo=FALSE}
+## Save plot in the dedicated output directory
+ggsave(file.path(outputdir, survePFSline2File), width = 20, height = 15, units = "cm")
+
+# remove object which will be no longer used
+rm(survePFSline2File, pfsl2.data, pfs_data) # remove objects that are no longer used
+```
+
+
+### Overall Survival
+
+<!--- The next chunk creates a table (see Table @ref(tab:summaryOS)) with summary statistics of OS from each line of treatment. --->
+
+```{r summaryOS, echo=FALSE}
+summary_dis <- lapply(1:6, function(k){econmod$disprog_[from >= k, .(TTD = sum(time_spent)),
+                                               by = .(sample, strategy_id, patient_id)]})
+summary_dis <- lapply(1:6, function(k){ summary_dis[[k]][, from := k]})
+summary_dis <- do.call(rbind, summary_dis)
+
+summary_dis <- summary_dis[, .(OSmean = mean(TTD), OSmedian = median(TTD) ),
+         by = .(sample, strategy_id, from)]
+summary_dis <- summary_dis[,.(medianOS = mean(OSmedian),
+                              meanOS = mean(OSmean),
+                              low = quantile(OSmean, .025),
+                              up = quantile(OSmean, .975)),
+                           by = .(strategy_id, from)]
+summary_dis <- summary_dis[order(strategy_id, from)]
+summary_dis <- left_join(summary_dis, per_line[,.(strategy_id, from, prop_init)],
+                         by = c('strategy_id', 'from'))
+names(summary_dis) <- c("Strategy", "LOT",
+                          "Median", "Mean",
+                         "Low 5%", "Top 5%", "% of initial pop")
+summary_dis <- summary_dis[, `:=`(`LOT` = ifelse(LOT == 6, "5+", LOT),
+                                  `Median OS` = round(Median,2),
+                                  `Mean OS` = round(Mean,2),
+                                  `95% - CI` = paste0("(",round(`Low 5%`,2),", ",
+                                  round(`Top 5%`,2), ")")
+                                  )]
+
+# OS tbl
+tbl_summaryOS <- summary_dis[, .(Strategy, `% of initial pop`, LOT,
+            `Median OS`, `Mean OS`, 
+            `95% - CI`)]
+tbl_summaryOS$`% of initial pop` <- round(tbl_summaryOS$`% of initial pop`,2)
+
+knitr::kable(tbl_summaryOS,
+  longtable = T,
+  booktabs = T,
+  linesep = linesep(c(6,6,6)),
+  caption = "Overall survival from line of treatment",
+  align = "rrrrr") %>%
+  kableExtra::kable_styling('striped', latex_options = "hold_position")
+
+ rm(summary_dis, per_line)
+```
+
+\newpage
+
+-   Summary tables with statistics on sojourn time between states (non-death and to death state) are saved to `r file.path(outputdir, progression_tbl)`.
+
+```{r probsummaryTBLS, echo=FALSE}
+progressionlist <- list(TTP=tbl_summaryP, TTDP= tbl_summaryD, PFS = tbl_summaryPFS, OS = tbl_summaryOS)
+
+## Save tbl_summaryP and tbl_summaryD to excel files in the dedicated output directory
+writexl::write_xlsx(progressionlist, path = file.path(outputdir, progression_tbl))
+# WriteXLS::WriteXLS(progressionlist, ExcelFileName = file.path(outputdir, progression_tbl))
+
+# remove objects that will no longer be used
+rm(tbl_summaryD, tbl_summaryP, tbl_summaryPFS, tbl_summaryOS, progressionlist, progression_tbl)
+```
+
+
+```{r figOSl1,  fig.align='center', fig.cap="\\label{fig:figOSl1}Overall Survival from Start of First Line Treatment", fig.pos='H', echo=FALSE, warning=FALSE}
+# Overall Survival from Start of First Line Treatment
+osl1.data <- econmod$disprog_[, .(OS = sum(time_spent)), 
+                              by = .(sample, strategy_id, patient_id)]
+prob_data <- lapply(seq(0,40, by =.5), 
+                    function(x){data.table(t=x,osl1.data[,.(prob = mean(OS>x)),
+                                                         by =.(sample,strategy_id)])})
+prob_data <- do.call(rbind, prob_data)
+prob_data <- prob_data[, .(prob_mean = mean(prob),
+                           ci_l = quantile(prob, .025),
+                           ci_u = quantile(prob, .975)),
+                       by = .(t,strategy_id)]
+setorder(prob_data, strategy_id, t)
+set_labels(prob_data, labels = labs, new_names = c("strategy_name"))
+ggplot(prob_data, aes(x = t, y = prob_mean, col = strategy_name)) +
+  geom_line() +  ylim(0,1) +
+  geom_ribbon(aes(ymin = ci_l, ymax = ci_u, fill = strategy_name), alpha = .1, linetype=0) +
+  xlab("Years") + ylab("OS from Start of First Line Treatment") +
+  #ggtitle("Overall Survival from Start of First Line Treatment") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+```
+
+-   This plot is saved to `r file.path(outputdir, surveOSline1File)`.
+
+```{r plotSurvl1, echo=FALSE}
+## Save plot in the dedicated output directory
+ggsave(file.path(outputdir, surveOSline1File), width = 20, height = 15, units = "cm")
+
+# remove object which will be no longer used
+rm(surveOSline1File,  osl1.data, prob_data)
+```
+
+
+```{r figOSl2,  fig.align='center', fig.cap="\\label{fig:figOSl2}Overall Survival from Second Line", fig.pos='H', echo=FALSE, warning=FALSE}
+# Overall Survival from Second Line
+osl2.data <- econmod$disprog_[from!=1, .(OS = sum(time_spent)), 
+                              by = .(sample, strategy_id, patient_id)]
+prob_data <- lapply(seq(0,30, by =.5), 
+                    function(x){data.table(t=x,osl2.data[,.(prob = mean(OS>x)),
+                                                         by =.(sample,strategy_id)])})
+prob_data <- do.call(rbind, prob_data)
+prob_data <- prob_data[, .(prob_mean = mean(prob),
+                           ci_l = quantile(prob, .025),
+                           ci_u = quantile(prob, .975)),
+                       by = .(t,strategy_id)]
+setorder(prob_data, strategy_id, t)
+set_labels(prob_data, labels = labs, new_names = c("strategy_name"))
+ggplot(prob_data, aes(x = t, y = prob_mean, col = strategy_name)) +
+  geom_line() +  ylim(0,1) +
+  geom_ribbon(aes(ymin = ci_l, ymax = ci_u, fill = strategy_name), alpha = .1, linetype=0) +
+  xlab("Years") + ylab("OS from Second Line") +
+  #ggtitle("Overall Survival from Second Line") +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+```
+
+-   This plot is saved to `r file.path(outputdir, surveOSline2File)`.
+
+```{r plotSurv2l, echo=FALSE}
+## Save plot in the dedicated output directory
+ggsave(file.path(outputdir, surveOSline2File), width = 20, height = 15, units = "cm")
+
+# remove object which will be no longer used
+rm(surveOSline2File,  osl2.data, prob_data)
+```
+
+\newpage 
+
+## QALYs and Costs
+
+The model creates figures that break down expected QALYs, drug treatment costs, other medical costs, and total costs by sequence and line of treatment. These figures are saved to the following files
+
+* QALY summary: `r file.path(outputdir, qalys_nm)`.
+* Drug treatment cost: `r file.path(outputdir, txcosts_nm)`
+* Other medical costs: `r file.path(outputdir, medcosts_nm)`
+* Total costs: `r file.path(outputdir, totcosts_nm)
+
+### QALYs
+
+<!-- The next chunk creates a chart of expected QALYs for each strategy sequence (see Figure   \@ref(fig:fig4)) broken down by LOT-->
+
+```{r fig4, fig.align='center', fig.cap="\\label{fig:fig4}Expected QALYs by Treatment Sequence", fig.ps='H', echo=FALSE}
+# Expected QALYs by Treatment Sequence
+qaly_chart <- chart.LOT(econmod$qalys_,'QALYs')
+chart_data <- list( QALYs = qaly_chart$chart_data)
+
+qaly_chart$plot +
+  theme(plot.title = element_text(hjust = 0.5) ) 
+```
+
+```{r qalyChartSave, echo=FALSE}
+## Chart is saved to the directory output/ (relative to root directory)
+ggsave(file.path(outputdir, qalys_nm), width = 20, height = 15, units = "cm")
+
+## remove object that is no longer used
+rm(qaly_chart)
+```
+
+### Drug Treatment Costs
+
+<!--- Chart \@ref(fig:TxCosts) show the expected drug treatment costs for each strategy sequence broken down by line of treatment. --->
+
+```{r TxCosts, fig.align='center', fig.cap="\\label{fig:TxCosts}Expected Drug Treatment Costs", fig.ps='H', echo=FALSE}
+tx_chart <- chart.LOT(df = econmod$costs_, categ = 'Drug')
+chart_data <- c(chart_data, list(TX = tx_chart$chart_data))
+
+tx_chart$plot +
+  theme(plot.title = element_text(hjust = 0.5) )  +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1e-6, suffix = "M"))
+```
+
+The next chunk saves the drug treatment cost chart to `r file.path(outputdir, txcosts_nm)`
+
+```{r TxChartSave, echo=FALSE}
+## Chart is saved to the directory output/ (relative to root directory)
+ggsave(file.path(outputdir, txcosts_nm), width = 20, height = 15, units = "cm")
+
+## remove object that is no longer used
+rm(txcosts_nm)
+```
+
+\newpage
+
+### Other Medical Costs
+
+<!-- Chart  \@ref(fig:MedCosts) show the expected other medical costs for each strategy sequence broken down by line of treatment. -->
+
+```{r MedCosts, fig.align='center', fig.cap="\\label{fig:TxCosts}Expected Other Medical Costs", fig.ps='H', echo=FALSE}
+medcost_chart <- chart.LOT(econmod$costs_,'Other Medical Costs')
+chart_data <- c(chart_data, list(MedCosts = medcost_chart$chart_data))
+
+medcost_chart$plot +
+  theme(plot.title = element_text(hjust = 0.5) )  +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1e-3, suffix = "K"))
+```
+
+```{r MedCostChartSave, echo=FALSE}
+## Chart is saved to the directory output/ (relative to root directory)
+ggsave(file.path(outputdir, medcosts_nm), width = 20, height = 15, units = "cm")
+
+#$ Save chart data to the dedicated output directory
+writexl::write_xlsx(chart_data, file.path(outputdir,chart_data_nm))
+# WriteXLS::WriteXLS(chart_data, file.path(outputdir,chart_data_nm))
+
+## remove object that is no longer used
+rm(medcosts_nm)
+```
+
+\newpage
+
+### Total Costs
+
+<!-- Chart  \@ref(fig:TotCosts) shows the expected total costs (drug treatment costs + other medical costs) for each strategy sequence broken down by line of treatment. -->
+
+```{r TotCosts, fig.align='center', fig.cap="\\label{fig:TotCosts}Expected Total Costs: Drug Costs plus Other Medical Costs", fig.ps='H', echo=FALSE}
+totcost_chart <- chart.LOT(econmod$costs_,categ = 'Total Costs')
+chart_data <- c(chart_data, list(TotCosts = totcost_chart$chart_data))
+
+totcost_chart$plot +
+  theme(plot.title = element_text(hjust = 0.5) )  +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1e-6, suffix = "M"))
+```
+
+```{r TotCostChartSave, echo=FALSE}
+## Chart is saved to the directory output/ (relative to root directory)
+ggsave(file.path(outputdir, totcosts_nm), width = 20, height = 15, units = "cm")
+
+#$ Save chart data to the dedicated output directory
+writexl::write_xlsx(chart_data, file.path(outputdir,chart_data_nm))
+# WriteXLS::WriteXLS(chart_data, file.path(outputdir,chart_data_nm))
+
+## remove object that is no longer used
+rm(totcosts_nm, chart_data_nm)
+```
+
+----
+
+\newpage
+
+### Summary of Model Outcomes
+
+A summary table of expected QALYs and costs is saved to `r file.path(outputdir, ecoSummary)`
+
+<!-- Tables  \@ref(tab:summaryqalys)  and \@ref(tab:summarycosts) show summaries of the average medical costs, treatment costs and QALYs for each of the sequence strategies considered in this study. -->
+
+```{r summaryqalys, echo=FALSE}
+ce_sim <- econmod$summarize()
+pp <- format(summary(ce_sim, labels = labs))
+pp$Outcome <- c('QALYs', 'Inpatient',  'Outpatient',
+                'OtherOutRx', 'HOSPICE',  'Drug', 'Total')
+knitr::kable(pp[1,-1],
+             longtable = T,
+             booktabs = T, # linesep = linesep(c(1,6)),
+             caption = "Expected QALYs") %>%
+  kableExtra::kable_styling('striped', latex_options = "hold_position")
+```
+
+```{r summarycosts, echo=FALSE}
+knitr::kable(pp[-1,-1],
+             longtable = T,
+             booktabs = T, # linesep = linesep(c(1,6)),
+             caption = "Expected Costs") %>%
+  kableExtra::kable_styling('striped', latex_options = "hold_position")
+```
+
+```{r save.econanalysis, echo=FALSE}
+## Saved economic summary statistics in dedicated output directory
+ce_sim$summary <- pp
+writexl::write_xlsx(ce_sim, file.path(outputdir, ecoSummary))
+#WriteXLS::WriteXLS(summary(ce_sim), file.path(outputdir, ecoSummary))
+```
+
+----
+
+# Cost-Effectiveness Analysis
+
+<!--- Cost effectiveness analysis (CEA)--->
+
+```{r cea, echo=FALSE}
+cea_pw_out <- cea_pw(ce_sim, comparator = anchor_seq, dr_qalys = discQ, dr_costs = discC , k=seq(0,500000,50000))
+ic <- format(icer(cea_pw_out, labels = labs, k =kwill))
+## Saved cea data in dedicated output directory
+writexl::write_xlsx(cea_pw_out, file.path(outputdir, cea_output))
+
+```
+
+<!-- Summary CEA -->
+
+```{r ceasummary, echo=FALSE}
+knitr::kable(ic,
+             longtable = T,
+             booktabs = T, # linesep = linesep(c(1,6)),
+             caption = paste("Cost-effectiveness analysis: ", "K =", kwill, "Anchor sequence", anchor_seq)
+             ) %>%
+  kableExtra::kable_styling('striped', latex_options = "hold_position")
+```
+
+## Cost-effectiveness plane
+
+The cost-effectiveness plane is a plot of the incremental effectiveness of treatment strategy sequences (relative to a comparator sequence:  sequence 'r anchor_seq') against the corresponding incremental costs of. The plot exhibits both the uncertainty and the magnitude of the estimates. Each point on the plot is from a particular random draw from the probabilistic sensitivity analysis (PSA). The dotted line in the plot is the willingness to pay (WTP) line, with slope equal to the value $k$ of willingness to pay per QALY: `kwill`. For a given $k$, points below the line are cost-effective while those above it are not.
+
+```{r CE_plane, echo = FALSE}
+theme_set(theme_bw())
+# kwill:  willingness to pay per QALY
+plot_ceplane(cea_pw_out, k = kwill)
+```
+
+## Acceptability curves
+This plots provide a summary measure for quantifying uncertainty in terms of the probability that each strategy sequence is the most cost effective. These curves are derived from the simulation output as the proportion of simulation draws that each strategy has the highest net monetary benifit (NMB) estimate.
+
+
+```{r acceptability, echo=FALSE}
+ce <- left_join(ce_sim$qalys[,.(sample, strategy_id, grp_id,qalys)], 
+                ce_sim$costs[category =='total',.(sample, strategy_id, grp_id, costs)],
+                by = c("sample", "strategy_id", "grp_id"))
+cea_out <-  cea(ce, k=seq(0,500000,50000), sample = "sample", strategy = "strategy_id",
+                grp = "grp_id", e = "qalys", c = "costs")
+plot_ceac(cea_out)
+
+```
+
+---
+
+# References
